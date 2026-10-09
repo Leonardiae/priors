@@ -389,7 +389,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV5** (live since 2026-10-09, root `#8641`; owner-only backing) | `0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E` |
 | SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xD43711128f49187b6396F8Bb365e2D00D228840c`, `V5Steps` `0xa0729ed369afbff4e3E3241d8d1ae077b2661be0`, `V5Book` `0x8D9D168EC419460d20026002c8c732f5f7Be6B20`, `V5Records` `0x4c8f394222909a0044e0Fb90d0de18FE2A89629a`, `V5Exit` `0xCA6Dfe1b85ff8c29AB91E7A3736fd16E59AC4C56`, `V5Auto` `0x0896833364b96F42b60e8947b2bb61C3C8277D14`, `V5Sync` `0x9EDb8C831f559638bBbECD43f913eC9E96FA2916`, `V5View` `0x5d130640f8cE621aa96E0c2702e262e448E476Ea`, `V5Lens` `0x2623ec71Ea24E3257bf47738EB9f28BD9716B356` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
-| StockVault implementation (behind the proxy; since 2026-10-04) | `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` |
+| StockVault implementation (behind the proxy; since 2026-10-10) | `0x737b015244C2115E774FABda72325C719b997d7C` |
 | StockVault ProxyAdmin (the only way to upgrade the vault; owned by the timelock since 2026-10-07, by the Safe before; with no delay from 2026-10-11 19:49 UTC) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault's settings) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | RevenueRouter (the steward's sweep and the vaults' fees go here) | `0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43` |

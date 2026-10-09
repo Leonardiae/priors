@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import "./StockVaultAuditFixes.t.sol";
 
-/// The vault's changes from the 2026-09-28 stocks readiness review (docs/SECURITY-v2.md, "StockVault"): V1 (a written-off
+/// The vault's changes from the stocks readiness review (docs/reports/2026-09-28-stocks-readiness.md): V1 (a written-off
 /// position cannot be overwritten), V2 (a 14-day price-jump window, and a hold while the token's multiplier is ahead of
 /// its feed), P4 (each token's own LTV and cap on open lines).
 contract StockVaultReadinessFixesTest is StockVaultBase {

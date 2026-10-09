@@ -505,15 +505,18 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     function _close(uint256 id, Position storage p, bool refund) internal {
         CreditPoolV2.Agent memory a = pool.getAgent(id);
         if (a.defaulted) revert AgentDefaulted(id); // settle() seizes it
+        bool first = !p.closing;
+        // freezePosition's "no refund" wins, whichever call ends the position: a close after a failed last onRelease
+        // ends it here, and must keep the line counted as settle() would (GHSA-jgwm-4r5q-r2mf)
+        refund = refund && (first || closeRefund[id]);
         if (a.sponsor == agentId) {
             pool.freeze(id, true); // our own onRelease callback is skipped: this call reconciles below
-            bool first = !p.closing;
             if (first) {
                 p.closing = true;
                 emit CloseRequested(id, msg.sender);
             }
             if (a.activeLoans != 0) {
-                closeRefund[id] = refund && (first || closeRefund[id]); // freezePosition's "no refund" wins
+                closeRefund[id] = refund;
                 return; // the last repayment closes it (onRelease), or settle()
             }
         }
@@ -625,8 +628,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     }
 
     /// @notice USDG value of `amount` of `token` at its current price (6 decimals); `ok` false (and `value` 0) when the
-    ///         price cannot be used for new credit (unknown asset, no feed answer, stale, oracle paused, or a lending
-    ///         hold: lendStatus says which).
+    ///         price cannot be used for new credit (unknown asset, no feed answer, stale, a feed that answers in other
+    ///         decimals than setAsset read, oracle paused, or a lending hold: lendStatus says which).
     function valueOf(address token, uint256 amount) external view returns (bool ok, uint256 value) {
         (ok, value) = _valueOf(token, amount);
         if (ok && _lendStatus(token) != 0) return (false, 0);
@@ -706,7 +709,9 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     ///         MAX_LTV_BPS), and `lineCap`, the USDG of open lines it may back all together (0: no new line). One call,
     ///         so a token is never accepted without its risk set. Disabling stops new positions only; open ones keep
     ///         being priced by the feed set here and lent against at the LTV set here (lowering it shrinks what they
-    ///         can still draw, as a falling price would).
+    ///         can still draw, as a falling price would). The feed's decimals are read here: a feed that later answers
+    ///         in others (its proxy moved to an aggregator of another precision) prices no new credit until this is
+    ///         called again with the same feed, which reads them again.
     function setAsset(address token, address feed, uint64 maxAge, bool enabled, uint16 ltvBps, uint128 lineCap)
         external
         onlyOwner
@@ -844,7 +849,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @dev Value in USDG (6 decimals) at the feed's price; `ok` false rather than a revert, so the borrow hook can
     ///      refuse cleanly. A price is used only if positive, not in the future, younger than the asset's `maxAge`,
-    ///      and while the token does not flag its oracle as paused (the flag is advisory: a token without it passes).
+    ///      in the decimals `setAsset` read from the feed, and while the token does not flag its oracle as paused (the
+    ///      flag is advisory: a token without it passes).
     function _valueOf(address token, uint256 amount) internal view returns (bool ok, uint256 value) {
         Asset storage a = assets[token];
         if (a.feed == address(0)) return (false, 0);
@@ -854,6 +860,14 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
                 return (false, 0);
             }
             price = uint256(answer);
+        } catch {
+            return (false, 0);
+        }
+        // a Chainlink proxy answers in its current aggregator's decimals: one its owner moved to another precision
+        // would be priced on the old scale (8 to 18 decimals: 10^10 times the value). Nothing is priced until the
+        // owner's setAsset reads the feed again (GHSA-rwj3-gr68-p93p)
+        try IPriceFeed(a.feed).decimals() returns (uint8 fdec) {
+            if (fdec != a.feedDecimals) return (false, 0);
         } catch {
             return (false, 0);
         }

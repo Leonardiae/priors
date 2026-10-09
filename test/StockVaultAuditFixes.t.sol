@@ -65,7 +65,7 @@ contract NoHistoryFeed {
     }
 }
 
-/// The fixes for the 2026-09-27 internal audit of StockVault (docs/SECURITY-v2.md, "StockVault").
+/// The fixes for the 2026-09-27 audit of StockVault (docs/reports/2026-09-27-audit-onboarding-stocks.md).
 contract StockVaultAuditFixesTest is StockVaultBase {
     MockAccessRegistry registry;
     RhStock rh;

@@ -181,6 +181,55 @@ contract StockVaultEpochRefundTest is StockVaultBase {
         assertEq(vault.linedThisEpoch(), 0, "a leave refunds through settle as through onRelease");
     }
 
+    // ---- close() on the state a failed last onRelease leaves (GHSA-jgwm-4r5q-r2mf, @byfor8, 2026-10-05). The sponsor
+    // is gone, the position is still open and closing: close() reached _end with its caller's refund and gave an
+    // evicted position its line back, where settle() and onRelease keep it counted. ----
+
+    /// Builds the stuck state: open, borrow, the given requests while the loan is open, then the last repayment with a
+    /// failing onRelease.
+    function _stuck(bool depositorClose, bool evict) internal {
+        _openMax(AGENT_PK, AGENT);
+        loan_ = _draw(agentOp, AGENT);
+        if (depositorClose) {
+            vm.prank(agentOp);
+            vault.close(AGENT);
+        }
+        if (evict) {
+            vm.prank(owner);
+            vault.freezePosition(AGENT);
+        }
+        _withFailedRelease(_repayLoan);
+        assertTrue(vault.getPosition(AGENT).closing);
+    }
+
+    /// The same stuck state ends the same way whoever ends it: settle() by anyone, or the depositor's close().
+    function _settleAndCloseAgree(bool depositorClose, bool evict, uint256 expected) internal {
+        _stuck(depositorClose, evict);
+        uint256 snap = vm.snapshotState();
+        vm.prank(anyone);
+        vault.settle(AGENT, 0);
+        uint256 bySettle = vault.linedThisEpoch();
+        vm.revertToState(snap);
+        vm.prank(agentOp);
+        vault.close(AGENT);
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Closed));
+        assertEq(spy.balanceOf(agentOp), 10 * SHARE, "every token back");
+        assertEq(vault.linedThisEpoch(), bySettle, "close and settle end the same stuck state the same way");
+        assertEq(bySettle, expected);
+    }
+
+    function test_closeThenFreeze_failedHook_depositorClose_keepsTheSpend() public {
+        _settleAndCloseAgree(true, true, LINE); // the reporter's ordering
+    }
+
+    function test_freezeWithLoanOpen_failedHook_depositorClose_keepsTheSpend() public {
+        _settleAndCloseAgree(false, true, LINE); // an eviction alone, then the depositor's close
+    }
+
+    function test_closeWithLoanOpen_failedHook_depositorClose_refunds() public {
+        _settleAndCloseAgree(true, false, 0); // no eviction: the deferred close keeps its refund
+    }
+
     /// No stale intent: a position that ended after a deferred close does not hand its refund to the next one.
     function test_nextPositionStartsClean() public {
         _closeThenRepay(AGENT_PK, AGENT);
