@@ -7,17 +7,19 @@ name: ci
 on:
   push:
   pull_request:
-# Nothing here writes back to the repo or uses the token, so it gets read and no more.
+# Nothing here writes back to the repo or uses the token, so it gets read and no more. Every action is pinned to a
+# commit (its tag in the comment), not a tag that can be moved, and no checkout keeps the token in .git/config.
 permissions:
   contents: read
 jobs:
   contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           submodules: recursive
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
           # Pinned to the version the maintainers actually run. It was v1.3.0, whose `forge fmt` disagrees
           # with newer releases about blank lines, so `fmt --check` failed in CI on files that were clean
@@ -31,19 +33,20 @@ jobs:
   sdk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           submodules: recursive
       # `npm test` needs foundry, not just Node: selfcheck.mjs runs `forge test` to prove the
       # lender-loss regression is really in the suite, and spawns `anvil` to drive a fresh agent
       # through a real loan. Without this it fails on `spawn anvil ENOENT`.
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
         with:
           # Pinned to the version the maintainers actually run. It was v1.3.0, whose `forge fmt` disagrees
           # with newer releases about blank lines, so `fmt --check` failed in CI on files that were clean
           # locally. A formatter check is only useful if both sides format the same way.
           version: v1.7.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: npm ci
@@ -54,8 +57,9 @@ jobs:
   public-safety:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           # --history walks every blob in every commit, which needs the full history, not a shallow clone.
           fetch-depth: 0
       - run: bash scripts/check-public.sh --history

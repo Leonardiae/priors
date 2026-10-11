@@ -3,6 +3,7 @@
 // through both. The facilitator here is a spy, and the check API a stub answering like https://priors.trade/api/check.
 //   node scripts/test-x402-gate.mjs
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 // PRIORS_X402=<an installed @priors/x402's directory> runs these checks on that copy, as published
 const X402 = process.env.PRIORS_X402 ? pathToFileURL(`${process.env.PRIORS_X402}/index.mjs`).href : "../packages/x402/index.mjs";
@@ -140,6 +141,19 @@ await t("a record that cannot be read refuses (never serves on a guess), and rea
   const g = recordGate({ fetchImpl });
   await g.recordOf(GOOD); await g.recordOf(GOOD);
   assert.equal(apiCalls - before, 1);
+});
+
+await t("attach returns the server, so the README's tier sample keeps the gate in its own name", async () => {
+  // `const gate = recordGate({...}).attach(server)` names the server, and its gate.tierPrice() throws: the README's
+  // sample read that way in 0.5.0
+  const gate = recordGate({ fetchImpl, basePrice: "$0.02", tiers: [{ minRepaid: 3, price: "$0.01" }] });
+  const s = createResourceServer({ facilitatorClient: spyFacilitator() });
+  assert.equal(gate.attach(s), s);
+  assert.equal(typeof gate.tierPrice(), "function");
+  const doc = "../packages/x402/README.md";
+  const text = fs.readFileSync(new URL(doc, import.meta.url), "utf8");
+  assert.match(text, /gate\.tierPrice\(\)/, `${doc} has no tier sample`);
+  assert.doesNotMatch(text, /const \w+ = recordGate\([^\n]*\)\.attach\(/, `${doc} names the server attach() returns as a gate`);
 });
 
 await t("GHSA-vjcp: the cache stays bounded: in API mode X-Priors-Agent does not make a new entry, and cacheMax evicts the oldest", async () => {

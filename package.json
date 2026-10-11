@@ -23,6 +23,8 @@
   "files": [
     "sdk",
     "deployments/stock-assets.4663.json",
+    "deployments/pt-usdg.4663.json",
+    "deployments/pendle.4663.json",
     "bin",
     "skills",
     "src",
@@ -42,7 +44,8 @@
     "test:score-v2": "node scripts/test-score-v2.mjs && node scripts/test-x402-income.mjs"
   },
   "dependencies": {
-    "ethers": "^6.13.4"
+    "ethers": "^6.13.4",
+    "viem": "^2.56.9"
   },
   "workspaces": [
     "packages/*"

@@ -255,7 +255,11 @@ contract InviteBondTest is TreasuryV4Base {
         _default(loan);
         bond.slash(AGENT);
         assertEq(usdc.balanceOf(safe), BOND, "the default forfeits the bond that replaced A's");
-        assertEq(usdc.balanceOf(agentOp) + usdc.balanceOf(agentOp2), together, "A and B together: the loan, less one bond, nets nothing");
+        assertEq(
+            usdc.balanceOf(agentOp) + usdc.balanceOf(agentOp2),
+            together,
+            "A and B together: the loan, less one bond, nets nothing"
+        );
     }
 
     function test_superseding_restartsTheUnusedWait() public {

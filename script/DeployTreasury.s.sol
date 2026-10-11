@@ -12,7 +12,7 @@ import {IPonsFeeEscrow, IPonsFactoryCreator} from "../src/interfaces/IPonsFeeEsc
 ///
 ///   POOL=0x...             the live CreditPool (required)
 ///   OWNER=0x...            treasury owner, defaults to the broadcaster (use the pool's Safe)
-///   FEE_SINK=0x...         buyback wallet for the treasury's 25% sponsor cut, defaults to OWNER
+///   FEE_SINK=0x...         fee wallet for the treasury's 25% sponsor cut, defaults to OWNER
 ///   INVITER=0x...          key whose signed invites seat agents (the invite script signs with it)
 ///   PONS_FEE_ESCROW=0x...  and PONS_FACTORY=0x...  Pons wiring; zero on chains without Pons
 ///

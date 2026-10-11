@@ -9,7 +9,12 @@
 //
 // Amounts are in whole dollars (USDG has 6 decimals; the SDK converts). Every call is one transaction or one
 // view; nothing is stored anywhere but the chain.
+//
+// PT-USDG (Pendle's principal token for USDG; the markets of deployments/pendle.4663.json) from the same entry, sdk/pt-usdg.mjs:
+//   import { ptQuote, ptBuy, ptSell, ptRedeem, ptPosition } from "./sdk/priors.mjs";
+//   await ptQuote(rpc, { side: "buy", amount: 100 }); const { calls } = await ptBuy(rpc, { account, amount: 100 });
 import { ethers } from "ethers";
+export { PT_USDG, PT_MARKETS, ptQuote, ptBuy, ptSell, ptRedeem, ptPosition, ptListing, impliedApy } from "./pt-usdg.mjs";
 
 const USDC = 1_000_000n;
 export const POOL_ABI = [

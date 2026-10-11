@@ -106,11 +106,12 @@ export function scoreV2(input, W = WEIGHTS) {
     cur.amount += amount;
     byPayer.set(k, cur);
   }
-  let incomeValue = 0, payers = 0;
+  let incomeValue = 0, payers = 0, incomeUsdg = 0;
   for (const [, { amount, score }] of [...byPayer.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
     const usd = amount / USDG;
     if (usd < C.income.minPayerUsdg) continue; // dust: a payer counts once it has paid 1 USDG in the window
     incomeValue += Math.min(usd, C.income.perPayerCapUsdg) * payerWeight(score, W);
+    incomeUsdg += usd;
     payers++;
   }
   const breadth = Math.min(C.income.breadthMax, payers * C.income.breadthPointsPerPayer);
@@ -146,7 +147,8 @@ export function scoreV2(input, W = WEIGHTS) {
   if (rung >= 3 && comp.income >= R[4].minIncomePoints && payers >= R[4].minPayers) rung = 4;
 
   const components = Object.entries(comp).map(([key, points]) => ({ key, points: round1(points), max: C[key].max, why: C[key].why }));
-  const detail = { dollarDays: round1(dollarDays), seasonedLoans: seasoned, repaidByOthers, repaidFromIncome: round1(repaidFromIncome), lateRepayments: late, ageDays, distinctPayers: payers };
+  const detail = { dollarDays: round1(dollarDays), seasonedLoans: seasoned, repaidByOthers, repaidFromIncome: round1(repaidFromIncome), lateRepayments: late, ageDays, distinctPayers: payers, incomeUsdg: round1(incomeUsdg) };
+  // incomeUsdg: the x402 USDG of the payers that count (in the window, netted, dust left out), before caps and weights
   return { version: W.version, agentId: id, score, rung, rungName: R[rung].name, components, penalties, detail, flags };
 }
 

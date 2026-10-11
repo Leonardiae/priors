@@ -18,6 +18,9 @@
 //   stocks   (addresses.stockVault) await p.stockAssets(); await p.stockPosition(agentId)
 //            await p.openStockLine(agentId, token, "0.05")                        // deposit and open the line
 //            await p.addCollateral(agentId, "0.01"); await p.closeStockLine(agentId)
+//   PT-USDG  await p.ptQuote({ side: "buy", amount: 100 }); await p.ptPosition(addr)   (sdk/pt-usdg.mjs)
+//            await p.ptBuy(100); await p.ptSell("all"); await p.ptRedeem("all")       // { send: false } returns the calls
+//            await p.openPtLine(agentId, 50)                                      // once the stock vault lists PT-USDG
 //
 // Amounts: a number or a decimal string is whole USDG ("5", 5.5); a bigint is raw 6-decimal units. Every write
 // simulates first (a revert is explained with the contracts' own custom errors, before any gas is spent) and
@@ -29,6 +32,7 @@
 import { ethers } from "ethers";
 import { parseInvite, explainRevert } from "./priors.mjs";
 import { pay as floatPay, resend as floatResend, settleLoans as floatSettleLoans, v5BeforeBorrow, SEAT_VAULT_V5_ABI } from "./float.mjs";
+import { PT_USDG, ptQuote, ptBuy, ptSell, ptRedeem, ptPosition, ptListing } from "./pt-usdg.mjs";
 import { STOCK_VAULT_ABI, stockAssets as readStockAssets, stockPosition as readStockPosition, collateralOf, borrowable } from "./stock-vault.mjs";
 
 export { parseInvite, explainRevert, SEAT_VAULT_V5_ABI };
@@ -729,5 +733,37 @@ extendPriorsV2({
   settleLoans(agentId) { this._needSigner(); return floatSettleLoans({ signer: this.signer, pool: this.pool, agentId }); },
 });
 
+/* PT-USDG (sdk/pt-usdg.mjs): Pendle's principal token for USDG, bought, sold and redeemed through Pendle's router with
+   this instance's provider and signer, and posted behind an agent's line through the stock vault once it lists it. A
+   trade with a signer is sent unless `send: false`; without one (or with `send: false`) it returns the calls, for
+   `account` (default: the signer's address). */
+const ptTrade = (fn) => async function (amount, opts = {}) {
+  const { send = true, account, ...rest } = opts;
+  const wallet = send && this.signer ? this.signer : undefined;
+  const who = account || (this.signer ? await this.signer.getAddress() : undefined);
+  return fn(this.provider, { ...rest, amount, account: who, wallet });
+};
+extendPriorsV2({
+  /** What a trade gives now: { side: "buy" | "sell" | "redeem", amount, slippageBps? } (sdk/pt-usdg.mjs ptQuote). */
+  ptQuote(o = {}) { return ptQuote(this.provider, o); },
+  /** Buy PT-USDG with `amount` USDG (approve exactly that to the router, then swap). */
+  ptBuy: ptTrade(ptBuy),
+  /** Sell `amount` PT-USDG (or "all") for USDG at the market, before maturity. */
+  ptSell: ptTrade(ptSell),
+  /** Redeem `amount` PT-USDG (or "all") for USDG 1:1, from maturity on; `{ market }` picks a listed market (PT_MARKETS),
+   *  else the oldest matured one the account holds PT of. */
+  ptRedeem: ptTrade(ptRedeem),
+  /** `addr`'s PT-USDG (default: the signer's): balance, value now, days to maturity, implied fixed APY, the vault's listing. */
+  async ptPosition(addr) { return ptPosition(this.provider, addr || (await this.me())); },
+  /** Deposit `amount` PT-USDG behind agent `agentId` and open its line (openStockLine with the PT token), once the
+   *  stock vault lists it enabled (ptListing's `backsLines`); refused before that, with nothing sent. */
+  async openPtLine(agentId, amount, opts = {}) {
+    const l = await ptListing(this.provider);
+    if (!l || !l.backsLines) throw new Error(l && l.listed ? "the stock vault takes no new PT-USDG line now (disabled, or its shared cap is used up)" : "the stock vault does not list PT-USDG yet");
+    return this.openStockLine(agentId, PT_USDG.token, amount, opts);
+  },
+});
+
+export { PT_USDG };
 export { sendChecked };
 export default PriorsV2;
