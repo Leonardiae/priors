@@ -119,6 +119,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     uint64 internal constant MAX_PRICE_AGE = 7 days;
     uint64 internal constant MAX_EPOCH = 365 days;
     uint256 internal constant MAX_ASSETS = 100; // bounds assetList()
+    uint256 internal constant DECIMALS_READ_GAS = 50_000; // a token's or feed's decimals(): a beacon proxy's is ~15,000
     uint256 internal constant MAX_JUMP_BPS = 5000; // the loosest price-jump bound the owner can set (a 1:2 split is 10000)
     uint256 internal constant MIN_JUMP_BPS = 500;
     uint64 internal constant MAX_GUARD_WINDOW = 14 days;
@@ -628,8 +629,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     }
 
     /// @notice USDG value of `amount` of `token` at its current price (6 decimals); `ok` false (and `value` 0) when the
-    ///         price cannot be used for new credit (unknown asset, no feed answer, stale, a feed that answers in other
-    ///         decimals than setAsset read, oracle paused, or a lending hold: lendStatus says which).
+    ///         price cannot be used for new credit (unknown asset, no feed answer, stale, a feed or a token that answers
+    ///         in other decimals than setAsset read, oracle paused, or a lending hold: lendStatus says which).
     function valueOf(address token, uint256 amount) external view returns (bool ok, uint256 value) {
         (ok, value) = _valueOf(token, amount);
         if (ok && _lendStatus(token) != 0) return (false, 0);
@@ -709,9 +710,10 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     ///         MAX_LTV_BPS), and `lineCap`, the USDG of open lines it may back all together (0: no new line). One call,
     ///         so a token is never accepted without its risk set. Disabling stops new positions only; open ones keep
     ///         being priced by the feed set here and lent against at the LTV set here (lowering it shrinks what they
-    ///         can still draw, as a falling price would). The feed's decimals are read here: a feed that later answers
-    ///         in others (its proxy moved to an aggregator of another precision) prices no new credit until this is
-    ///         called again with the same feed, which reads them again.
+    ///         can still draw, as a falling price would). The feed's and the token's decimals are read here: a feed that
+    ///         later answers in others (its proxy moved to an aggregator of another precision), or a token that does
+    ///         (its issuer upgraded it to another precision), prices no new credit until this is called again with the
+    ///         same feed, which reads them again.
     function setAsset(address token, address feed, uint64 maxAge, bool enabled, uint16 ltvBps, uint128 lineCap)
         external
         onlyOwner
@@ -849,8 +851,9 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @dev Value in USDG (6 decimals) at the feed's price; `ok` false rather than a revert, so the borrow hook can
     ///      refuse cleanly. A price is used only if positive, not in the future, younger than the asset's `maxAge`,
-    ///      in the decimals `setAsset` read from the feed, and while the token does not flag its oracle as paused (the
-    ///      flag is advisory: a token without it passes).
+    ///      in the decimals `setAsset` read from the feed, for a token that still answers the decimals `setAsset` read
+    ///      from it, and while the token does not flag its oracle as paused (the flag is advisory: a token without it
+    ///      passes).
     function _valueOf(address token, uint256 amount) internal view returns (bool ok, uint256 value) {
         Asset storage a = assets[token];
         if (a.feed == address(0)) return (false, 0);
@@ -866,11 +869,14 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         // a Chainlink proxy answers in its current aggregator's decimals: one its owner moved to another precision
         // would be priced on the old scale (8 to 18 decimals: 10^10 times the value). Nothing is priced until the
         // owner's setAsset reads the feed again (GHSA-rwj3-gr68-p93p)
-        try IPriceFeed(a.feed).decimals() returns (uint8 fdec) {
-            if (fdec != a.feedDecimals) return (false, 0);
-        } catch {
-            return (false, 0);
-        }
+        (bool okF, uint8 fdec) = _decimalsOf(a.feed);
+        if (!okF || fdec != a.feedDecimals) return (false, 0);
+        // the token's own scale, the other half of it: a stock token is a beacon proxy, and an implementation its
+        // issuer installs in another precision would be priced on the old one (18 to 24 decimals: 10^6 times the
+        // value), with no hold to catch it. Nothing is priced until the owner's setAsset reads the token again
+        // (GHSA-855q-24q2-qwph)
+        (bool okT, uint8 tdec) = _decimalsOf(token);
+        if (!okT || tdec != a.tokenDecimals) return (false, 0);
         try IStockToken(token).oraclePaused() returns (bool paused_) {
             if (paused_) return (false, 0);
         } catch {}
@@ -952,6 +958,23 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
             ok := and(ok, gt(returndatasize(), 31))
             if ok { word := mload(0) }
         }
+    }
+
+    /// @dev `decimals()` read so that it fails closed: at most DECIMALS_READ_GAS, exactly one word back (no more is
+    ///      copied), at most 255. Anything else, a token or feed that cannot answer, is (false, 0), never a revert and
+    ///      never the borrow hook's whole budget (the fix's audits, 2026-10-11).
+    function _decimalsOf(address target) internal view returns (bool ok, uint8 d) {
+        if (target.code.length == 0) return (false, 0);
+        uint256 g = DECIMALS_READ_GAS;
+        uint256 word;
+        assembly ("memory-safe") {
+            mstore(0, 0x313ce56700000000000000000000000000000000000000000000000000000000) // decimals()
+            ok := staticcall(g, target, 0, 4, 0, 0x20)
+            ok := and(ok, eq(returndatasize(), 32))
+            if ok { word := mload(0) }
+        }
+        if (!ok || word > type(uint8).max) return (false, 0);
+        d = uint8(word);
     }
 
     function _flag(address target, bytes memory data) internal view returns (bool) {
