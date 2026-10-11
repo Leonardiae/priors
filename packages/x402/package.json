@@ -1,6 +1,6 @@
 {
   "name": "@priors/x402",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "private": false,
   "description": "x402 v2 on Robinhood Chain (eip155:4663) in USDG: a money parser for ExactEvmScheme, the Priors facilitator config, and a payer that borrows the gap from a Priors credit line.",
   "type": "module",

@@ -1,5 +1,13 @@
 # @priors/mcp changelog
 
+## 0.8.4 (2026-10-11)
+
+- **SeatVaultV5 lines work out of the box.** The bundled `deployments/4663.v2.json` names SeatVaultV5
+  (`0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD`, root `#8762`, live since 2026-10-11 and named by BuyAndBack and the
+  SwapLimiter), so a borrow on a V5 line refreshes the line first (from the agent's owner, or from this key once V5
+  has recorded it for 24 h); before, that needed `PRIORS_V5` and `PRIORS_V5_ROOT`, which still override it. On
+  `@priors/x402` 0.6.5, whose `robinhood` constants name the same V5 and whose `creditContracts` uses it by default.
+
 ## 0.8.3 (2026-10-10)
 
 - **`PRIORS_STATE_DIR` must be yours alone** (GHSA-52gp-533q-jx99). It keeps what stops a payment being signed twice

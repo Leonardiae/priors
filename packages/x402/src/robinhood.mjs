@@ -23,6 +23,11 @@ export const robinhood = Object.freeze({
   registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
   /** The stock vault (src/StockVault.sol, live since 2026-09-28; deployments/4663.v2.json `stockVault`). */
   stockVault: "0xbEcd07EC689988e16b870C121756C4c2C8cb02B6",
+  /** SeatVaultV5 (the owner's $PRIORS behind its agent's line), live since 2026-10-11 and named by BuyAndBack and the
+   *  SwapLimiter (deployments/4663.v2.json `seatVaultV5`); a borrow on its line refreshes the line first. */
+  seatVaultV5: "0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD",
+  /** SeatVaultV5's root identity (`seatVaultV5AgentId`). */
+  seatVaultV5AgentId: 8762,
 });
 
 /** Both names a Robinhood Chain requirement can carry: v2 CAIP-2 and the v1 name. */

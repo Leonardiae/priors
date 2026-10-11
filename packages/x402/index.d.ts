@@ -26,6 +26,10 @@ export interface RobinhoodConstants {
   readonly registry: `0x${string}`;
   /** The Priors stock vault (lines backed by the agent's own stock tokens), live since 2026-09-28. */
   readonly stockVault: `0x${string}` | null;
+  /** SeatVaultV5 (the owner's $PRIORS behind its agent's line), live since 2026-10-11. */
+  readonly seatVaultV5: `0x${string}`;
+  /** SeatVaultV5's root identity. */
+  readonly seatVaultV5AgentId: number;
 }
 export declare const robinhood: RobinhoodConstants;
 export declare const ROBINHOOD_NETWORKS: ReadonlySet<string>;

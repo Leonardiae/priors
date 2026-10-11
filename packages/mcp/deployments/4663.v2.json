@@ -32,5 +32,8 @@
   "seatSizerV4Block": 75614955,
   "autoRepayV1": "0x765f51Bd38404154762f2822d3ac5d16CE9AF822",
   "autoRepayV1Block": 79616581,
-  "autoRepayV1Note": "AutoRepay v1: retired before use, never enrolled, no allowance. Replaced by AutoRepay v2, recorded here as autoRepay and autoRepayBlock once deployed. Kept so the score mapping recognises both; nothing else uses it."
+  "autoRepayV1Note": "AutoRepay v1: retired before use, never enrolled, no allowance. Replaced by AutoRepay v2, recorded here as autoRepay and autoRepayBlock once deployed. Kept so the score mapping recognises both; nothing else uses it.",
+  "seatVaultV5": "0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD",
+  "seatVaultV5AgentId": 8762,
+  "seatVaultV5Block": 85924243
 }

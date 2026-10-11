@@ -275,7 +275,7 @@ export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow =
  * @param {{ runner: any, addresses?: { pool?: string, lens?: string, usdg?: string, registry?: string, stockVault?: string | null } }} o
  */
 export function creditContracts({ runner, addresses = {} }) {
-  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, stockVault: robinhood.stockVault, seatVaultV5: null, seatVaultV5AgentId: null, ...addresses };
+  const a = { pool: robinhood.pool, lens: robinhood.lens, usdg: robinhood.usdg, registry: robinhood.registry, stockVault: robinhood.stockVault, seatVaultV5: robinhood.seatVaultV5, seatVaultV5AgentId: robinhood.seatVaultV5AgentId, ...addresses };
   return {
     addresses: a,
     v5: a.seatVaultV5 ? new ethers.Contract(a.seatVaultV5, V5_ABI, runner) : null,

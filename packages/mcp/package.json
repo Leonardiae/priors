@@ -1,7 +1,7 @@
 {
   "name": "@priors/mcp",
   "mcpName": "io.github.priors-agents/priors",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": false,
   "description": "MCP server for Priors on Robinhood Chain: pay x402 URLs in USDG, read balances, credit lines and scores, borrow and repay, and buy, sell and redeem PT-USDG. Key from PRIORS_KEY_FILE (a file only you can read) or PRIORS_KEY, never the command line.",
   "type": "module",
@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
-    "@priors/x402": "0.6.4",
+    "@priors/x402": "0.6.5",
     "ethers": "^6.13.4",
     "undici": "6.29.0",
     "viem": "^2.56.9",

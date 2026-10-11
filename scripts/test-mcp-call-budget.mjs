@@ -242,6 +242,12 @@ class StallingPool extends ethers.JsonRpcProvider {
     if (f.name === "getParams") return POOL_I.encodeFunctionResult("getParams", [[100_000n, 50_000_000n, 86400n, 30n * 86400n, 3n * 86400n, 7n * 86400n, 100n, 0n, 0n, 0n, 9000n, 0n]]);
     if (f.name === "quoteFee") return POOL_I.encodeFunctionResult("quoteFee", [1_000n, 0n, 0n, 0n]);
     if (f.name === "borrow") return POOL_I.encodeFunctionResult("borrow", [BigInt(st.loans.length + 1)]);
+    // the borrow's V5 step (the package names SeatVaultV5 since 0.8.4) asks the agent's sponsor first: a line from
+    // another root (the treasury's), so V5 has nothing to do
+    if (f.name === "getAgent") {
+      const agent = POOL_I.getFunction("getAgent").outputs[0].components.map((c) => (c.type === "bool" ? c.name === "enrolled" : c.name === "sponsor" ? 6228n : 0n));
+      return POOL_I.encodeFunctionResult("getAgent", [agent]);
+    }
     throw new Error("mock: unexpected call " + f.name);
   }
   async _send(payload) {
