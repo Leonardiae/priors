@@ -156,17 +156,22 @@ library V5Core {
         return p.spotLatch || (p.median != 0 && M.atOrUnder80(spot_, p.median));
     }
 
-    /// @notice Every call that adds stake or line refuses under these (2.8's list).
-    function requireAddGuards(Env memory e, uint160 spot_) internal view {
+    /// @notice Every call that adds stake or line refuses under these (2.8's list). The breaker is evaluated before its
+    ///         latch is read, so defaults a hook recorded count (GHSA-g626); a refusal here reverts that trip with the
+    ///         call, and the next `sync()` or `refresh` records it.
+    function requireAddGuards(Env memory e, uint160 spot_) internal {
         if (paused()) revert IV5Errors.Paused();
+        breakerEval();
         if (S.layout().tripped) revert IV5Errors.BreakerOn();
         if (depthGuard(e)) revert IV5Errors.DepthGuardOn();
         if (spotGuard(spot_)) revert IV5Errors.SpotGuardOn();
     }
 
     /// @notice No pending owner stake merges while this reads on (2.7): the breaker, `depthGuardOn` or the
-    ///         median-valued form, none of which a transaction can move.
-    function mergeFrozenA(Env memory e) internal view returns (bool) {
+    ///         median-valued form, none of which a transaction can move. The breaker is evaluated first, so defaults a
+    ///         hook recorded count before any first steps merge A (GHSA-g626).
+    function mergeFrozenA(Env memory e) internal returns (bool) {
+        breakerEval();
         S.Layout storage l = S.layout();
         return l.tripped || l.price.depthOn || depthForm(e, true);
     }

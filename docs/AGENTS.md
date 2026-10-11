@@ -79,7 +79,7 @@ Paying per call with x402 instead of borrowing by hand: `s.pay(url, { agentId, m
 balance and borrows only the shortfall. See [FLOAT.md](FLOAT.md).
 
 A line sponsored by SeatVaultV5 is raised only by `refresh(agentId)` on V5, from the owner's key or from a delegate key
-24 hours after V5 recorded it. Once `deployments/4663.v2.json` names V5 (`seatVaultV5`, `seatVaultV5AgentId`), `borrow`
+24 hours after V5 recorded it, while that key is still the agent's delegate at the pool. Once `deployments/4663.v2.json` names V5 (`seatVaultV5`, `seatVaultV5AgentId`), `borrow`
 and `pay` do this first; a key V5 has not recorded is recorded then, and borrows only within the line's current room
 until its 24 hours have run. See [PARTICIPATE.md](PARTICIPATE.md), "A line sponsored by SeatVaultV5".
 

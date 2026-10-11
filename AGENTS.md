@@ -14,7 +14,7 @@ contracts, the SDK, the CLIs, and the skill that walks an agent through getting 
 stock vault (`StockVault`, lines against Robinhood stock tokens), addresses in
 `deployments/4663.v2.json`. The growth seat vault (`SeatVaultV4`, $50 lines for agents with 10
 repaid loans) is live since 2026-09-29 and takes no new seats since 2026-10-09. `SeatVaultV5` is live since 2026-10-09
-with owner-only backing (an agent's owner stakes its own $PRIORS behind the line; internal reviews only, no external
+(redeployed on 2026-10-11 with two Low fixes) with owner-only backing (an agent's owner stakes its own $PRIORS behind the line; internal reviews only, no external
 audit). The v1 pool is paused; its records were imported into v2. Use the v2 tools
 (`npx priors-v2`, `sdk/priors-v2.mjs`) for anything on mainnet. The v1 tools (`npx priors`, `sdk/priors.mjs`)
 read v1 history and drive the local devnet, which still deploys v1.

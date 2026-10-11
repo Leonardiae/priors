@@ -36,7 +36,7 @@
   "priorsLiquidity": "0xbEC159832D05749557F3f972c4823979C8dC8451",
   "swapLimiter": "0x4535b1d92ebBe8176463dE4b58Ca9B66A231eb0E",
   "keeperHelper": "0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372",
-  "seatVaultV5": "0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E",
-  "seatVaultV5AgentId": 8641,
-  "seatVaultV5Block": 84306464
+  "seatVaultV5": "0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD",
+  "seatVaultV5AgentId": 8762,
+  "seatVaultV5Block": 85924243
 }

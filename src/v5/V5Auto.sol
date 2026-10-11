@@ -48,6 +48,13 @@ library V5Auto {
         Batch memory b;
         b.sp = K.spot(e);
         b.sqrtP = K.pFull(b.sp, K.lastObs(e));
+        // defaults a hook recorded count before the latch is read (GHSA-g626): a trip by this evaluation stands and the
+        // batch takes nothing, as a trip inside it does (below). Within the batch an item's own reconciliation
+        // evaluates whatever it newly records, and no hook runs between items.
+        if (!l.tripped) {
+            K.breakerEval();
+            if (l.tripped) return;
+        }
         bool guards = K.paused() || l.tripped || K.depthGuard(e) || K.spotGuard(b.sp);
         uint256[] memory usd = new uint256[](items.length);
         for (uint256 i = 0; i < items.length; i++) {

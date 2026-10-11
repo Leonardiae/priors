@@ -23,7 +23,7 @@ library V5View {
 
     /// @notice `canBorrow` (2.3): V5's pause off; the price cache set; the generation open, not closing, not settled,
     ///         its `ownerChanged` latch clear; the owner the bound owner and the caller the bound owner or the delegate
-    ///         V5 recorded at least 24 h ago; term ≤ 10 days; fewer than 5 listed entries; no listed loan open past
+    ///         V5 recorded at least 24 h ago, still the agent's controller at the pool; term ≤ 10 days; fewer than 5 listed entries; no listed loan open past
     ///         `dueAt` and no unreconciled late repayment; listed open loans equal to `activeLoans`; for a first loan
     ///         the week's open room covers the line `open` approved; the depth guard's lasting state off (question
     ///         30); with Stage 3's check on, the agent's premium at V5's target; the loan's fee within free backing; and
@@ -39,6 +39,8 @@ library V5View {
         if (a.caller != g.owner) {
             S.Delegate storage d = l.delegates[a.id];
             if (a.caller != d.who || block.timestamp < uint256(d.at) + C.DELEGATE_WAIT) return false;
+            // and still the agent's controller at the pool, as the pool's own borrow requires (GHSA-8pxr)
+            if (!e.pool.isController(a.id, a.caller)) return false;
         }
         uint256 n = g.listLen;
         if (n >= C.LIST_CAP) return false;

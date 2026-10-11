@@ -18,6 +18,7 @@ abstract contract TripBase is V5Base {
     uint256 internal X;
     address internal ox;
     uint256[] internal yLoans;
+    bool internal failFirstHook; // the first default's onDefault hook fails (HookFailed): V5 records it on reconciliation
 
     function _agentCount() internal pure virtual override returns (uint256) {
         return 7;
@@ -42,6 +43,12 @@ abstract contract TripBase is V5Base {
 
     function _markOthers() internal {
         for (uint256 i = 0; i < yLoans.length; i++) {
+            if (i == 0 && failFirstHook) {
+                vm.mockCallRevert(address(v5), abi.encodeWithSelector(v5.onDefault.selector), "");
+                pool.markDefault(yLoans[i]);
+                vm.clearMockedCalls();
+                continue;
+            }
             pool.markDefault(yLoans[i]); // each hook records it in the breaker's buckets; none evaluates
         }
         assertFalse(lens.breakerTripped(), "due, not yet tripped");
@@ -59,11 +66,14 @@ abstract contract TripBase is V5Base {
 
 /// @notice D-01: a breaker trip inside a compound batch. The PoC (docs/AUDIT-DEEP-V5.md) deposited into A while A's
 ///         merge was frozen, orphaning a two-day-old bucket; now no item of the batch deposits, every credit waits.
+///         Since GHSA-g626's fix the batch evaluates the breaker before any item, so defaults the hooks recorded trip
+///         it there; a trip inside the batch comes from an item's reconciliation recording a default its hook did not.
 contract V5FixCompoundTripTest is TripBase {
     uint256 internal Y; // a second book with auto-add on, items before X in a batch
     address internal oy;
     uint32 internal dMinus2;
     uint32 internal dDay;
+    bool internal reconcileX; // X's last repayment reconciled before the defaults: X's first steps then record nothing
 
     function setUp() public override {
         super.setUp();
@@ -105,6 +115,7 @@ contract V5FixCompoundTripTest is TripBase {
         _repay(lx);
         dDay = d0 + 16;
         _dayAt(dDay, 12);
+        if (reconcileX) v5.pokeFees(X);
         _markOthers();
         assertEq(dDay % 2, dMinus2 % 2, "same parity");
     }
@@ -121,14 +132,14 @@ contract V5FixCompoundTripTest is TripBase {
         (uint256 owed0,,,,,,) = lens.totals();
         vm.prank(keeper);
         v5.compound(_items1(), 0); // no revert: the trip stands
-        assertTrue(lens.breakerTripped(), "tripped by X's own first steps inside the batch");
+        assertTrue(lens.breakerTripped(), "tripped by the batch's own evaluation, before any item");
         S.Gen memory g = _gen(X);
         assertEq(g.pendingTok[C.OWNER], 5_000 * T, "nothing deposited into A");
         assertEq(g.pendingTok[C.OWN], g0.pendingTok[C.OWN], "nor into the owner's own backing");
         assertTrue(g.liveDay[C.OWNER][(dMinus2 + 1) % 2] == dMinus2 + 1, "the D-2 bucket keeps its slot");
         assertEq(lens.claimable(ox), cl0, "no credit taken");
         (uint256 owed1,,,,,,) = lens.totals();
-        // X's own first steps split its repaid loan's fees (the book's part); nothing was taken from holdersOwed
+        // nothing was taken from holdersOwed; it moved only by any split of X's fees (none: X's steps did not run)
         assertApproxEqAbs(owed1 - owed0, (g.index - g0.index) * g.divisor / C.INDEX, 1, "holdersOwed: only the split");
 
         // the Safe clears the breaker; the next poke merges the D-2 bucket; the owner's A is paid whole
@@ -173,25 +184,30 @@ contract V5FixCompoundTripTest is TripBase {
         assertEq(next, 0, "the queue moved on");
     }
 
-    /// @dev An item taken before a later item trips the breaker gets its credit back: the batch deposits nothing.
+    /// @dev An item taken before a later item trips the breaker gets its credit back: the batch deposits nothing. The
+    ///      trip comes from the later item's reconciliation: agent 1's default, whose hook failed (`HookFailed`), is
+    ///      recorded only there, and with the four the hooks recorded ($200, under the floor) reaches $250.
     function test_D01_tripOnALaterItem_earlierItemsCreditKept() public {
+        failFirstHook = true;
         _toBatchDay();
+        (,,,,,, uint256 recorded) = lens.totals();
+        assertEq(recorded, 4, "the failed hook recorded nothing");
         V5Auto.Item[] memory items = new V5Auto.Item[](2);
         items[0] = V5Auto.Item(Y, oy);
-        items[1] = V5Auto.Item(X, ox);
+        items[1] = V5Auto.Item(agents[1], _owner(agents[1]));
         uint256 cly = lens.claimable(oy);
         uint256 pend = _gen(Y).pendingTok[C.OWNER] + _gen(Y).pendingTok[C.OWN];
-        S.Gen memory gx0 = _gen(X);
+        S.Gen memory g10 = _gen(agents[1]);
         (uint256 owed0,,,,,,) = lens.totals();
         vm.prank(keeper);
         v5.compound(items, 0);
-        assertTrue(lens.breakerTripped());
+        assertTrue(lens.breakerTripped(), "tripped by agent 1's reconciliation, the batch's second item");
         assertGt(lens.claimable(oy), cly + C.COMPOUND_ITEM_MIN, "Y's own new credit is in claimable");
         assertEq(_gen(Y).pendingTok[C.OWNER] + _gen(Y).pendingTok[C.OWN], pend, "Y got no stake");
         (uint256 owed1,,,,,,) = lens.totals();
-        S.Gen memory gx = _gen(X);
-        // Y's credit taken then given back: holdersOwed moved only by X's split in its first steps
-        assertApproxEqAbs(owed1 - owed0, (gx.index - gx0.index) * gx.divisor / C.INDEX, 1, "holdersOwed covers it");
+        S.Gen memory g1 = _gen(agents[1]);
+        // Y's credit taken then given back: holdersOwed moved only by agent 1's split in its first steps
+        assertApproxEqAbs(owed1 - owed0, (g1.index - g10.index) * g1.divisor / C.INDEX, 1, "holdersOwed covers it");
         uint256[] memory ids = new uint256[](1);
         ids[0] = Y;
         uint32[] memory gens = new uint32[](1);
@@ -200,6 +216,21 @@ contract V5FixCompoundTripTest is TripBase {
         vm.prank(oy);
         v5.collect(ids, gens);
         assertGt(usdg.balanceOf(oy) - u0, C.COMPOUND_ITEM_MIN, "collected in USDG");
+    }
+
+    /// @dev GHSA-g626 in compound: X reconciled before the defaults, so no item's own first steps record anything. On
+    ///      the deployed V5 the latch stayed stale and X's credit went into A; now the batch's evaluation trips first.
+    function test_GHSA_g626_compoundAfterHookRecordedThreshold_depositsNothing() public {
+        reconcileX = true;
+        _toBatchDay();
+        S.Gen memory g0 = _gen(X);
+        uint256 cl0 = lens.claimable(ox);
+        vm.prank(keeper);
+        v5.compound(_items1(), 0);
+        assertTrue(lens.breakerTripped(), "the batch evaluated the breaker before any item");
+        assertEq(_gen(X).pendingTok[C.OWNER], g0.pendingTok[C.OWNER], "nothing deposited into A");
+        assertEq(_gen(X).pendingTok[C.OWN], g0.pendingTok[C.OWN], "nor into the owner's own backing");
+        assertEq(lens.claimable(ox), cl0, "no credit taken");
     }
 
     /// @dev Control: with nothing to trip, the same batch compounds as before.
@@ -290,6 +321,7 @@ contract V5FixThirdSlotTest is V5Base {
 /// @notice D-02: `open`, fills and keeper sells check the breaker after the first steps that can trip it.
 contract V5FixGuardOrderTest is TripBase {
     address internal leaver = backer1;
+    bool internal reconcileHead; // X's repayment reconciled before the defaults: the head's first steps record nothing
 
     function setUp() public override {
         super.setUp();
@@ -347,6 +379,7 @@ contract V5FixGuardOrderTest is TripBase {
         assertGt(head, 0);
         _dayAt(d0 + 11, 4);
         _repay(lx); // on time, counted at the next reconciliation
+        if (reconcileHead) v5.pokeFees(X);
         _dayAt(d0 + 14, 2);
         _markOthers();
     }
@@ -369,6 +402,33 @@ contract V5FixGuardOrderTest is TripBase {
         vm.prank(keeper);
         v5.releaseFor(head, type(uint256).max);
         assertTrue(lens.breakerTripped());
+        assertEq(usdg.balanceOf(leaver), u0, "nothing sold");
+        (uint256 still,,,,) = lens.exitHead();
+        assertEq(still, head);
+    }
+
+    /// @dev GHSA-g626 in the exit paths: the head reconciled before the defaults, so its own first steps record
+    ///      nothing. On the deployed V5 the stale latch let the fill run; now the fill evaluates the breaker first.
+    function test_GHSA_g626_fillExit_afterHookRecordedThreshold_noFill() public {
+        reconcileHead = true;
+        uint256 head = _headTrips();
+        assertFalse(lens.breakerTripped(), "the hooks recorded $250 and evaluated nothing");
+        uint256 bal = priors.balanceOf(bb);
+        vm.prank(bb);
+        (uint256 taken,) = v5.fillExit(head, type(uint256).max, _sqrtFor(P0));
+        assertEq(taken, 0, "no fill under the breaker");
+        assertTrue(lens.breakerTripped(), "the fill's own evaluation tripped it, and the trip stands");
+        assertEq(priors.balanceOf(bb), bal);
+    }
+
+    /// @dev The same for the keeper's sale.
+    function test_GHSA_g626_keeperSell_afterHookRecordedThreshold_noSale() public {
+        reconcileHead = true;
+        uint256 head = _headTrips();
+        uint256 u0 = usdg.balanceOf(leaver);
+        vm.prank(keeper);
+        v5.releaseFor(head, type(uint256).max);
+        assertTrue(lens.breakerTripped(), "the sale's own evaluation tripped it, and the trip stands");
         assertEq(usdg.balanceOf(leaver), u0, "nothing sold");
         (uint256 still,,,,) = lens.exitHead();
         assertEq(still, head);

@@ -204,23 +204,27 @@ Reviewed before deployment by an internal audit (2026-09-27) and a readiness rev
 
 ## SeatVaultV5
 
-Deployed on 2026-10-09: **SeatVaultV5** (`0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, `src/SeatVaultV5.sol`, root
-`#8641`; `seatVaultV5Block` 84,306,464 in the record, its 14 deployment transactions in blocks 84,307,046 to
-84,307,418) and the nine libraries it is linked to (`src/v5/`: `V5Pos`, `V5Steps`, `V5Book`, `V5Records`, `V5Exit`,
+Deployed on 2026-10-11: **SeatVaultV5** (`0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD`, `src/SeatVaultV5.sol`, root
+`#8762`; `seatVaultV5Block` 85,924,243 in the record, its 14 deployment transactions in blocks 85,924,841 to
+85,925,143) and the nine libraries it is linked to (`src/v5/`: `V5Pos`, `V5Steps`, `V5Book`, `V5Records`, `V5Exit`,
 `V5Auto`, `V5Sync`, `V5View`, `V5Lens`; their addresses are in [BOUNTY.md](../BOUNTY.md)), which run by DELEGATECALL in
-V5's context and on its storage. An agent's owner opens the agent's line with its own $PRIORS, 75% of which burns on a
+V5's context and on its storage. It replaced the deployment of 2026-10-09 (`0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, root `#8641`, blocks
+84,307,046 to 84,307,418), which never had a book, to fix V5-1 and V5-2 below: on 2026-10-11 one timelock batch
+(tx `0x054a7b88d0b8a9cf823935c8277271b4183b2766c709b5c993fa34c5a9b11eef`) retired that root's whole free backing (1,170.32 USDG) to the Safe, named the new V5 in
+BuyAndBack and the SwapLimiter, and set its `minDrawK` to 4 (2 in kEff terms); the Safe then funded the new root with
+it, and cancelled the batch scheduled on 2026-10-09 that would have named the old one. An agent's owner opens the agent's
+line with its own $PRIORS, 75% of which burns on a
 default; V5's root backs every line 100% with its USDG in the pool, so a default burns the root's shares and never
 reaches lenders, as for every root. V5 has no owner and cannot be upgraded: the timelock and the Safe (guardian) are
 immutables, and V5's timelocked calls (`setOpenBacking`, `setPremiumCap`, `setKeeper`, `setVouchCap`, `retire` and the
-rest) wait the timelock's delay: 48 h until 2026-10-11 19:49 UTC, none from then (X1). The deployed runtime bytecode of V5 and of each library matches `forge build` of this repository's
+rest) wait the timelock's delay: none since 2026-10-11 19:49 UTC (X1). The deployed runtime bytecode of V5 and of each library matches `forge build` of this repository's
 source (immutables and each library's own address masked, the metadata hash included).
 
 **What is live (Stage 1).** Backing is owner-only: `openBacking` is false (others' backing is closed; only an agent's
-owner, and BuyAndBack's protocol backing once it buys for V5, stake behind a line) and the premium cap is 0. The
-timelock batch that names V5 in BuyAndBack and the SwapLimiter is scheduled, executable from 2026-10-11 16:48:02 UTC.
-Until it executes, V5 opens with the owner's own $PRIORS only: paying in USDG (`openWithUsdg`, `backWithUsdg`) and
-BuyAndBack's buying and placement wait for it. On 2026-10-09 SeatVaultV4 stopped taking new seats and its free USDG
-(1,116.60) went into V5's root, whose free backing was then 1,166.60 USDG.
+owner, and BuyAndBack's protocol backing once it buys for V5, stake behind a line) and the premium cap is 0. BuyAndBack
+and the SwapLimiter name V5 since 2026-10-11, so paying in USDG (`openWithUsdg`, `backWithUsdg`) and BuyAndBack's
+buying and placement are open. On 2026-10-09 SeatVaultV4 stopped taking new seats and its free USDG (1,116.60) went into
+the first V5's root, and from there into this one's: its free backing was 1,190.33 USDG after the move.
 
 **Reviewed internally only; no third-party audit.** Deploying without an external audit was the owner's decision. Three
 internal reviews ran before deployment: an internal audit (one Medium, four Low, five Informational), a deep audit of
@@ -241,13 +245,12 @@ proof-of-concept suites are internal. The rest of `test/v5/` holds V5's unit, at
 - **Owner-only backing.** No third party's $PRIORS stands behind an agent: a default burns that agent's owner's stake
   (75% of what opened the line, 50% of any further backing of its own) and half of any protocol backing BuyAndBack
   placed (at most a sixth of the owner's stake), and the root's pool shares cover the loan.
-- **The root's free backing.** V5 vouches only out of its root's stake in the pool (1,166.60 USDG free when V4's USDG
-  went in), and `vouchCap` keeps what the root vouches at or under 1,083.79 USDG.
+- **The root's free backing.** V5 vouches only out of its root's stake in the pool (1,190.33 USDG free after the
+  move of 2026-10-11), and `vouchCap` keeps what the root vouches at or under 1,083.79 USDG.
 - **The breaker.** It trips once the principal defaulted on V5's lines in 30 days reaches $250 or 5% of the counted
-  principal repaid on them, whichever is more, at the next evaluation: `sync()` (anyone may call it; the keeper does
-  every 30 minutes or so). A default's hook records it without evaluating, so until then an
-  open, a stake or a raise can still pass, within the stated caps, at most 45 minutes (a raise needs a price cache that
-  only `sync()` writes) (V5-1). Tripped, V5 opens no book, takes no new stake and raises no line (a `refresh` only
+  principal repaid on them, whichever is more. A default's hook records it without evaluating; every call the breaker pauses evaluates it
+  before reading it (`open`, `back`, `refresh`, `promote`, `compound`, the owner's stake merge, `fillExit`,
+  `keeperSell`), as do `sync()` and the recorders, so it trips at the first of them (V5-1, fixed). Tripped, V5 opens no book, takes no new stake and raises no line (a `refresh` only
   lowers) until the Safe's `clear()`; loans within a line already vouched still go through.
 - **The guardian pause.** The Safe can pause V5 for up to 14 days: new books, backing, raises and new loans stop, exits
   never do (leave, release, collect, close and settle keep working). It cannot pause again within 14 days of a pause's
@@ -255,8 +258,8 @@ proof-of-concept suites are internal. The rest of `test/v5/` holds V5's unit, at
 
 | id | sev | finding | status |
 |---|---|---|---|
-| V5-1 | Low | A default's `onDefault` hook records its principal in the breaker's 30-day bucket without evaluating the breaker, so once recorded defaults reach the threshold, owners' `refresh` (and new opens) can still add root-backed lines until the next `sync()` trips it; the lines so raised stay drawable after the trip. Every such line has its owner's consent, stake and full backing, and the window is at most 45 minutes. The description above said the breaker tripped on its own. GHSA-g626-94q6-4c84. | **Open (contract):** no V5 book exists yet. The description is corrected; the keeper can send `sync()` after a default on V5's root; the next V5 evaluates the breaker before reading it in every path that adds a line or stake. `test/v5/V5Reports20261010.t.sol`. |
-| V5-2 | Low | V5 keeps its own record of an agent's pool delegate (`noteDelegate`), and a raise trusted that record: after the owner cleared the delegate in CreditPoolV2, the former key could still `refresh` the line up to what the owner's own refresh gives, taking that much of the root's free backing (one key across many books held capacity other owners could not get); the pool refuses that key's borrow. O-4's shape: a delegate acting after it should have lapsed. GHSA-8pxr-7299-3f6j. | **Open (contract):** no V5 book or recorded delegate exists yet. Anyone, the owner included, ends the old key at once with `noteDelegate(id)`, and anyone can lower an undrawn raise to $5 after an hour; the keeper should note a cleared delegate too (it noted only a new one), and the next V5 checks the pool's current delegate before a raise. `test/v5/V5Reports20261010.t.sol`. |
+| V5-1 | Low | A default's `onDefault` hook records its principal in the breaker's 30-day bucket without evaluating the breaker, so once recorded defaults reach the threshold, owners' `refresh` (and new opens) can still add root-backed lines until the next `sync()` trips it; the lines so raised stay drawable after the trip. Every such line has its owner's consent, stake and full backing, and the window is at most 45 minutes. Reported by @SuperSmile0426, GHSA-g626-94q6-4c84. | **Fixed (the V5 of 2026-10-11, `0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD`), before any V5 book existed:** every call the breaker pauses evaluates it before reading its latch (`open`, `back`, `refresh`, `promote`, `compound`, the owner's stake merge, `fillExit`, `keeperSell`), so a call that marks the threshold's defaults and then adds is refused in the same transaction. `test/v5/V5Reports20261010.t.sol`, `test/v5/V5DeepAuditFixes.t.sol` (`test_GHSA_g626_*`, each failing on the first deployment's source). |
+| V5-2 | Low | V5 keeps its own record of an agent's pool delegate (`noteDelegate`), and a raise trusted that record: after the owner cleared the delegate in CreditPoolV2, the former key could still `refresh` the line up to what the owner's own refresh gives, taking that much of the root's free backing (one key across many books held capacity other owners could not get); the pool refuses that key's borrow. O-4's shape: a delegate acting after it should have lapsed. Reported by @SuperSmile0426, GHSA-8pxr-7299-3f6j. | **Fixed (the V5 of 2026-10-11, `0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD`), before any V5 book or recorded delegate existed:** a delegate raises, and `canBorrow` names it, only while it is still the agent's controller at the pool (`isController`), so a key the owner cleared or replaced there does nothing whether or not `noteDelegate` ran. `test/v5/V5Reports20261010.t.sol` (`test_GHSA_8pxr_*`). |
 
 ## SDK and x402 float
 

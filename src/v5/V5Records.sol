@@ -208,6 +208,7 @@ library V5Records {
         if (!st.hasBook || g.status != C.OPEN) revert IV5Errors.BookNotOpen();
         if (!st.readOk || g.ownerChanged) revert IV5Errors.OwnerChangedLatch();
         if (K.paused()) revert IV5Errors.Paused();
+        K.breakerEval(); // defaults a hook recorded count before the latch is read (GHSA-g626)
         if (l.tripped) revert IV5Errors.BreakerOn();
         if (K.depthGuard(e)) revert IV5Errors.DepthGuardOn();
         uint64 ep = K.epochNow(e);
@@ -238,8 +239,9 @@ library V5Records {
         uint160 ob;
     }
 
-    /// @notice `refresh` (2.3, 2.8, questions 37 and 40). Up: only the bound owner or its delegate recorded for 24 h,
-    ///         and only with no guard on, raises the pool's vouch toward the line valued as `canBorrow` values it,
+    /// @notice `refresh` (2.3, 2.8, questions 37 and 40). Up: only the bound owner or its delegate recorded for 24 h
+    ///         and still the agent's controller at the pool, and only with no guard on (the breaker evaluated first),
+    ///         raises the pool's vouch toward the line valued as `canBorrow` values it,
     ///         free of room up to the room-charged line, above it charged to the promotion share (up to `promoCredit`)
     ///         and the stake share (within its per-book cap), within the fee headroom and `vouchCap`, rounded down to
     ///         $5. Down: the owner's (or delegate's) own refresh that may raise lowers only to max(that line, principal
@@ -261,6 +263,8 @@ library V5Records {
         r.ob = K.lastObs(e);
         uint256 floor_ = M.max256(r.po, C.LINE_STEP);
         uint256 dt = floor_;
+        // defaults a hook recorded count before `_mayRaise` reads the latch; a trip here stands (GHSA-g626)
+        K.breakerEval();
         if (_mayRaise(e, id, g, st.readOk)) {
             uint256 lineUp =
                 M.line(g.counted[C.OWNER], K.pFull(r.sp, r.ob), C.ceiling(g.tier), K.kEff(r.sp, r.ob, true));
@@ -288,6 +292,9 @@ library V5Records {
             if (msg.sender != d.who || d.who == address(0) || block.timestamp < uint256(d.at) + C.DELEGATE_WAIT) {
                 return false;
             }
+            // and still the agent's controller at the pool: a key the owner cleared or replaced there raises nothing,
+            // whether or not anyone has called `noteDelegate` since (GHSA-8pxr)
+            if (!e.pool.isController(id, msg.sender)) return false;
         }
         S.Price storage p = l.price;
         if (K.paused() || l.tripped || !K.cacheFresh() || !p.feeOk || p.feeBps > C.FEE_CEILING_BPS) return false;

@@ -430,6 +430,7 @@ library V5Exit {
         uint64 eid = uint64(entryId);
         if (eid == 0 || eid != S.layout().qHead) revert IV5Errors.NotHead();
         holder = S.layout().entries[eid].holder;
+        K.breakerEval(); // defaults a hook recorded count before the latch is read (GHSA-g626); a trip here stands
         if (!serviceOpen(e) || sqrtFill == 0) return (0, holder);
         if (!_headCheck(e, eid)) return (0, holder);
         // the head's first steps may trip the breaker: no fill under it (2.2's order, deep audit D-02)
@@ -517,6 +518,7 @@ library V5Exit {
         uint64 eid = uint64(entryId);
         if (eid == 0 || eid != l.qHead) revert IV5Errors.NotHead();
         Sell memory s;
+        K.breakerEval(); // defaults a hook recorded count before the latch is read (GHSA-g626); a trip here stands
         if (!_sellOpen(e, s)) return;
         if (!_headCheck(e, eid)) return;
         // the head's first steps may trip the breaker: no sale under it (2.2's order, deep audit D-02)

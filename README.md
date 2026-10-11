@@ -42,7 +42,7 @@ Reviews are cheap to fake. Repaid debt isn't.
 > `npx priors-v2 status` and the SDK resolve them with no configuration. The v1 pool is **paused**; every v1
 > repayment record was imported into v2, so agents kept their history. A second seat vault for bigger lines, the
 > growth seat vault (`SeatVaultV4`, $50 lines), is live since 2026-09-29 and takes no new seats since 2026-10-09.
-> `SeatVaultV5` is live since 2026-10-09 with owner-only backing: an agent's owner stakes its own $PRIORS to open the
+> `SeatVaultV5` is live since 2026-10-09 with owner-only backing (redeployed on 2026-10-11 with the fixes of GHSA-g626 and GHSA-8pxr): an agent's owner stakes its own $PRIORS to open the
 > agent's line, which V5's root backs 100% in USDG. It has had internal reviews, no external audit.
 >
 > **What v2 changes.** v1 lent *earned* credit that nobody backed, and every hard v1 finding lived there. v2 drops
@@ -386,8 +386,8 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatSizer** (owns the seat vault since 2026-09-26; resizes the seat from the $PRIORS price, within bounds) | `0xd24B6484f4E68d72Fd2d3AF7bD036560B2ed5E61` |
 | **SeatVaultV4**, the growth seat vault (live since 2026-09-29, root `#6466`) | `0xb1c3a04496238D62E3c93118C297163855e22192` |
 | SeatSizer of the growth seat vault (owns it; the Safe owns the sizer) | `0x97C4e594D458f8BBE961d5384Bbd8a9Cc2D18777` |
-| **SeatVaultV5** (live since 2026-10-09, root `#8641`; owner-only backing) | `0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E` |
-| SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xD43711128f49187b6396F8Bb365e2D00D228840c`, `V5Steps` `0xa0729ed369afbff4e3E3241d8d1ae077b2661be0`, `V5Book` `0x8D9D168EC419460d20026002c8c732f5f7Be6B20`, `V5Records` `0x4c8f394222909a0044e0Fb90d0de18FE2A89629a`, `V5Exit` `0xCA6Dfe1b85ff8c29AB91E7A3736fd16E59AC4C56`, `V5Auto` `0x0896833364b96F42b60e8947b2bb61C3C8277D14`, `V5Sync` `0x9EDb8C831f559638bBbECD43f913eC9E96FA2916`, `V5View` `0x5d130640f8cE621aa96E0c2702e262e448E476Ea`, `V5Lens` `0x2623ec71Ea24E3257bf47738EB9f28BD9716B356` |
+| **SeatVaultV5** (live since 2026-10-11, root `#8762`; owner-only backing; it replaced the deployment of 2026-10-09, `0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, root `#8641`, which never had a book and whose root's USDG moved to it) | `0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD` |
+| SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xd2d393Daf7bABE6ac090a97765407256673Bf9Bc`, `V5Steps` `0x3a4B951E0eae25DD327224395ecE0C6fD6345f94`, `V5Book` `0x90992387BbfBcF6aB179B33535d283FEE2d832F4`, `V5Records` `0x23C3660Cd36401F6adE16f51f81F629a6aE6d826`, `V5Exit` `0x0BB0CF27E9a0f5DB38a3F58fc31b1f90D784CbC7`, `V5Auto` `0x22914DF387771bCB167Bfd1777678887D1AB1375`, `V5Sync` `0x2FE6cC16DA24694D48BbDD8C83d4732ca23276F4`, `V5View` `0xE5175D7C9C30E210197D23A45A3e0bbe66cF1846`, `V5Lens` `0x294a483e54aBE64d2037df370974304C0F3B09F7` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
 | StockVault implementation (behind the proxy; since 2026-10-10) | `0x737b015244C2115E774FABda72325C719b997d7C` |
 | StockVault ProxyAdmin (the only way to upgrade the vault; owned by the timelock since 2026-10-07, by the Safe before; with no delay from 2026-10-11 19:49 UTC) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
