@@ -1,0 +1,12 @@
+{
+  "name": "priors-x402-check-record-demo",
+  "private": true,
+  "type": "module",
+  "description": "A node:http merchant that refuses a payer with a bad Priors record before its x402 paywall (@priors/x402/check).",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@priors/x402": "^0.7.0"
+  }
+}

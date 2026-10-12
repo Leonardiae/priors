@@ -10,6 +10,8 @@ when an agent is short, it can borrow the gap from its [Priors](https://priors.t
   and borrows the gap when you allow it.
 - `robinhood`: the constants (network and its legacy v1 name, chain id, USDG address and decimals, EIP-712 domain,
   facilitator URL, public RPC URL, Priors pool, lens, identity registry and stock vault addresses).
+- `@priors/x402/check`: refuse a payer with a bad Priors record in one line, in front of any x402 paywall (Express,
+  Hono, Cloudflare Workers).
 
 ```sh
 npm i @priors/x402 @x402/core @x402/evm ethers
@@ -85,12 +87,77 @@ await mcp.connect(new StdioServerTransport());
 An agent pays it with `@x402/mcp`'s client and this package's USDG client:
 `wrapMCPClientWithPayment(mcpClient, createUsdgClient({ signer, maxPrice: "$0.05" }), { autoPayment: true })`.
 
+## Refuse a bad payer in one line
+
+`@priors/x402/check` (0.7.0) puts the payer's Priors record check in front of whatever runs your x402 paywall:
+`@x402/express`, `@x402/hono`, a legacy v1 stack, your own. It reads the payer from the payment header (v2
+`PAYMENT-SIGNATURE`, v1 `X-PAYMENT`), reads its record (`https://priors.trade/api/check`, cached as `recordGate`
+caches it) and judges it with the same policy as `recordGate`:
+
+- **no payment header**: the request goes on untouched, and the paywall answers 402 as before;
+- **a payer the policy refuses**: `403` with `{ "error": "priors_payer_defaulted", "message": "…" }` (or
+  `priors_record_too_short`, `priors_score_too_low`; `priors_payer_unknown` for a header that names no single payer).
+  The paywall never sees the payment, so it is never verified or settled: no money moves;
+- **a record that cannot be read**: `503` with `Retry-After`, the same JSON with `priors_record_unavailable`. It fails
+  closed; `failOpen: true` serves instead.
+
+Express (and Connect, or a bare `node:http` server: `check(req, res, next)`):
+
+```js
+import { requireRecord } from "@priors/x402/check";
+
+app.use(requireRecord({ minRepaid: 1 }));   // first: the record check
+app.use(paymentMiddleware(routes, server)); // then the paywall, as in "Merchant: Express"
+```
+
+Hono:
+
+```js
+import { honoRecord } from "@priors/x402/check";
+
+app.use(honoRecord({ minRepaid: 1 }));      // first: the record check
+app.use(paymentMiddleware(routes, server)); // then the paywall, as in "Merchant: Hono"
+```
+
+Cloudflare Workers, or any `fetch` handler (Next route handlers, Bun): wrap the handler that holds the paywall, so the
+check runs before it.
+
+```js
+import { withRecord } from "@priors/x402/check";
+
+const app = new Hono();
+app.use(paymentMiddleware(routes, server)); // the paywall, inside app.fetch
+app.get("/report", (c) => c.json({ report: "…" }));
+export default { fetch: withRecord(app.fetch, { minRepaid: 1 }) }; // runs before app.fetch
+```
+
+Elsewhere (Fastify, Koa, a router of your own), `await checkRequest(request, opts)` gives the decision: `{ ok, payer,
+record, reason, message, status, retryAfter }`; reuse the same `opts` object to keep one cache.
+
+**Why it is safe before the paywall.** The check runs before the x402 middleware, so the header it reads is not
+verified yet, and anyone can write any address in it. The check can only say no. A forged payer gets the forger
+refused, or goes on to the paywall, which verifies the signature: a payment from an address the sender cannot sign for
+fails there, as it would without the check. Two headers that could make the check judge one address while another pays
+are refused, not passed (`priors_payer_unknown`): a payment naming both EIP-3009 and Permit2 arms (GHSA-6vjc), and a v2
+and a v1 header naming different payers. So is a header that does not decode. Put it after the paywall instead and a
+refused payer would already have paid.
+
+Options: `refuseDefaulted` (default `true`), `minRepaid`, `minScore`, `source`, `rpc`, `pool`, `checkUrl`,
+`cacheSeconds`, `cacheMax` and `fetchImpl`, as for `recordGate` below (with `source: "chain"` the payer names its agent
+in `X-Priors-Agent`); `failOpen` (default `false`), `retryAfter` (seconds, default `10`) and `onDecision` (called with
+the decision for each request carrying a payment). Prices by record stay with `recordGate`'s `tierPrice()`: they depend
+on the amount the payment carries, which the paywall reads.
+
+A runnable demo, on `node:http` alone: [`examples/check-record`](examples/check-record).
+
 ## Merchant: check who is paying (record gate)
 
 The payer's Priors record is what it has borrowed and repaid on Robinhood Chain, and whether it ever defaulted.
-`recordGate` reads it before the facilitator sees the payment. A payment the merchant's policy refuses is never
-verified or settled: no money moves, and the client gets the usual 402 with the reason (`priors_payer_defaulted`,
-`priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`, `priors_record_unavailable`).
+`recordGate` reads it before the facilitator sees the payment, inside an `x402ResourceServer` from `@x402/core`
+(`createResourceServer`); on any other stack, use `@priors/x402/check` above. A payment the merchant's policy refuses
+is never verified or settled: no money moves, and the client gets the usual 402 with the reason
+(`priors_payer_defaulted`, `priors_record_too_short`, `priors_score_too_low`, `priors_price_not_entitled`,
+`priors_record_unavailable`).
 
 ```js
 import { createResourceServer, recordGate } from "@priors/x402";
@@ -357,6 +424,8 @@ await returnToRobinhood({ signer, amount: 1_000_000n, baseProvider: base }); // 
 
 `npm run test:packages` in the Priors repository: unit tests with mocks, and, with `RPC_URL` set, an anvil fork of
 chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is paid by `createPayer`.
-`scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the bridge; with `--fork`,
-`BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
+`scripts/test-x402-check.mjs` (part of `npm test`) runs `@priors/x402/check` through Express (alone and in front of
+`@x402/express`), Hono and a fetch handler, and `scripts/demo-x402-check.mjs` runs the demo from the packed tarball
+against the live check API. `scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the
+bridge; with `--fork`, `BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
 Robinhood Chain fork.
