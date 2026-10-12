@@ -86,6 +86,7 @@ import { keyFromEnv, stateDirProblem } from "./key-file.mjs";
 import { parsePayHosts, hostAllowed, hostKey, guardFetch } from "./pay-hosts.mjs";
 import { agentOf, dailyLedger, ledgerOwners } from "./daily.mjs";
 import { shareFacts, factsLine, repaidPost } from "./share.mjs";
+import { stockLineRequest } from "./stock-line.mjs";
 
 // @priors/x402 when installed from npm; the sibling package in the monorepo otherwise.
 async function loadX402() {
@@ -102,6 +103,16 @@ export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import
 const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json", import.meta.url), "utf8"));
 /** The stock tokens the stock vault accepts (a copy of the repository's deployments/stock-assets.4663.json). */
 const STOCK_ASSETS = JSON.parse(readFileSync(new URL("../deployments/stock-assets.4663.json", import.meta.url), "utf8")).assets;
+// stock_line_request's reads of the stock vault beyond @priors/x402's: the token's cap and open lines, the vault's
+// maxLine, the week's room and its root, and the fair default's buffer (an implementation without seizeBufferOf keeps
+// the whole deposit on a default: null)
+const STOCK_LINE_ABI = [
+  "function params() view returns (uint256 ltvBps, uint256 maxLine, uint256 epochCap, uint64 epochLength)", "function epochRoom() view returns (uint256)", "function agentId() view returns (uint256)",
+  "function openLinesOf(address token) view returns (uint256)", "function seizeBufferOf(address token) view returns (uint256)",
+  "function assets(address token) view returns (address feed, uint64 maxAge, uint8 tokenDecimals, uint8 feedDecimals, bool enabled, uint16 ltvBps, uint128 lineCap)",
+];
+// Go mode's account page, where the owner reviews what the agent asked for (the hosted server's APP_URL)
+const GO_APP_URL = "https://go.priors.trade/account";
 const DEFAULT_PAY_MAX_USD = 0.1;
 
 /** A private key (64 hex, optional 0x) anywhere in a string: refused on the command line. */
@@ -681,6 +692,21 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     status: (id) => C.creditStatus(contracts, id),
     stockAssets: () => C.stockAssets(contracts, STOCK_ASSETS),
     stockPosition: (id) => C.stockPosition(contracts, id, STOCK_ASSETS),
+    // stock_line_request's inputs, shaped as the hosted server reads them from /api/stocks (sdk/stock-line.mjs)
+    stockLineInputs: async (symbol, id) => {
+      if (!addresses.stockVault) throw new ToolError("Priors has no stock vault configured: stock lines are not open.");
+      const v = new ethers.Contract(addresses.stockVault, STOCK_LINE_ABI, provider);
+      const meta = STOCK_ASSETS.find((a) => a.symbol.toUpperCase() === symbol) || null;
+      const [vp, room, root, pp] = await Promise.all([v.params(), v.epochRoom(), v.agentId(), contracts.pool.getParams()]);
+      let asset = null;
+      if (meta) {
+        const [[x], a, lines, buffer] = await Promise.all([C.stockAssets(contracts, [meta]), v.assets(meta.token), v.openLinesOf(meta.token), v.seizeBufferOf(meta.token).catch(() => null)]);
+        asset = { symbol: meta.symbol, name: meta.name, token: meta.token, answer: x.answer, decimals: meta.decimals, feedDecimals: meta.feedDecimals, ltvBps: x.ltvBps, usable: !!x.usable, hold: Number(x.hold || 0), holdReason: x.holdReason || "", lineCap: a.lineCap, openLines: lines, seizeBufferBps: buffer };
+      }
+      let agent = null;
+      if (id != null) { const st = await C.creditStatus(contracts, id); agent = { id: Number(id), defaulted: !!st.defaulted, isRoot: !!st.isRoot, sponsor: Number(st.sponsor), activeLoans: st.openLoans.length, stockLine: !!st.collateral }; }
+      return { asset, vault: { maxLine: vp.maxLine, epochRoom: room, root: Number(root) }, pool: { feeBps: pp.feeBps, minLoan: pp.minLoan, graceDays: Number(pp.grace) / 86400 }, agent, count: STOCK_ASSETS.length };
+    },
     quote: (id, amount, term) => C.quoteBorrow(contracts, id, amount, term),
     borrow: (id, amount, term) => C.borrowLine(contracts, wallet, id, amount, term),
     repay: (loanId) => C.repayLoan(contracts, wallet, loanId),
@@ -1063,6 +1089,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     ];
     if (s.openLoans.length === 0) lines.push("Open loans: none.");
     for (const l of s.openLoans) lines.push(`Open loan #${l.loanId}: ${usd(l.principal)} + fee ${usd(l.fee)} = ${usd(l.due)}, due ${when(l.dueAt)}${Date.now() / 1000 > l.dueAt ? " (PAST DUE: repay now)" : ""}.`);
+    // the way to a bigger line when a task needs one (once per task: the tool's own rule)
+    if (!s.defaulted && !s.isRoot && !s.collateral && contracts.stockVault) lines.push("A task that needs more than this line: stock_line_request asks the agent's owner for a line backed by a Robinhood stock token they hold.");
     lines.push(...(await autopayLines(id)));
     // The day's limits (0.8.0) for the agent this server acts for: what is used today, across restarts and sessions.
     if (ledger && (agent_id === undefined || BigInt(agent_id) === dayAgent)) {
@@ -1108,6 +1136,27 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const p = await credit.stockPosition(id);
     if (!p) return `Agent #${id} has no stock position: its line (if any) is not backed by stock tokens.`;
     return [`Agent #${id}: stock line of ${usd(p.line)}, ${p.status}.`, collateralText(p)].join("\n");
+  });
+
+  // ---- stock_line_request: the agent asks its owner for a stock-backed line (the hosted server's tool, the same answer:
+  // sdk/stock-line.mjs). It reads; it never deposits, signs or holds the owner's tokens.
+  tool("stock_line_request", {
+    title: "Ask the owner for a stock-backed line",
+    description: "When the agent's Priors line is too small for a task, ask its owner for a line backed by a Robinhood stock token the owner holds: checks the token takes new lines now (price, holds, caps, the week's room) and the agent can take one, sizes the deposit to the line asked for (with room for a 23% fall), states the cost in cents for a day and a week and what a default would keep, and returns a Go mode link that opens the owner's deposit sheet already filled in. Nothing is deposited or signed by this tool. Ask once per task, and only for what the task needs. agent_id defaults to the configured wallet's agent.",
+    inputSchema: {
+      agent_id: z.number().int().nonnegative().optional().describe("The agent the line is for (an ERC-8004 id); default: the configured wallet's agent, or a new agent without one."),
+      symbol: z.string().min(1).max(12).describe("The stock token's ticker, e.g. SPY (stock_assets lists them)."),
+      line_usd: z.number().positive().max(1_000_000).describe("The line wanted, in USDG (lines are capped at the vault's maxLine, 500 today)."),
+      reason: z.string().max(200).optional().describe("Why the agent needs it, in one sentence, for its owner."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ agent_id, symbol, line_usd, reason }) => {
+    const id = agent_id !== undefined ? agent_id : wallet ? Number(await resolveAgent().catch(() => null)) || null : null;
+    const want = String(symbol).trim().toUpperCase();
+    const inp = await credit.stockLineInputs(want, id);
+    const r = stockLineRequest({ ...inp, lineUsd: line_usd, reason, appUrl: GO_APP_URL, asOf: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), symbol });
+    if (r.refusal) throw new ToolError(r.refusal);
+    return r.text;
   });
 
   // ---- score_of ------------------------------------------------------------------------------------------------

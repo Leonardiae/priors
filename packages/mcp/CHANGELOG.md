@@ -1,5 +1,17 @@
 # @priors/mcp changelog
 
+## 0.9.0 (2026-10-12)
+
+- **`stock_line_request`**: when the agent's line is too small for a task, it asks its owner for a line backed by a
+  Robinhood stock token the owner holds. It checks the token takes new lines now (its price, holds, the token's cap, the
+  vault's room this week) and that the agent can take one, sizes the deposit to the line asked for (line ÷ LTV × 1.3,
+  so what the agent can draw holds through a 23% fall), states the cost in cents for a day and a week, says what a
+  default would keep as the live vault does it (its fair-default buffer, or the whole deposit), and returns a Go mode
+  link that opens the owner's deposit sheet already filled in. It reads; it never deposits, signs or holds the owner's
+  tokens. The same answer as the hosted server's tool (both from `src/stock-line.mjs`).
+- `credit_status` names `stock_line_request` as the way to a bigger line, for an agent without a stock line.
+- On `@priors/x402` 0.7.0.
+
 ## 0.8.5 (2026-10-12)
 
 - **Money counts in the UTC day it lands** (GHSA-266h-jfr9-42cx). A call reserved its room in the day it started and
