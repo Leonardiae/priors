@@ -43,8 +43,9 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
 
 - **Treasury invite.** Ask at [priors.trade/invite](https://priors.trade/invite). The self-service invite needs a
   5 USDG bond in `InviteBond` from the wallet that owns the agent, and proof of ownership to the Telegram bot; the
-  bond comes back after 3 qualified loans with none open, or after 4 days if the agent never gets a line, and goes to
-  the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
+  bond comes back once the agent closes its treasury line with no loan open (the pool's `leave`, then the bond's
+  `release`; since 2026-10-12, when the Safe set treasury v4's `minQualified` to 1,000,000), or after 4 days if the
+  agent never gets a line, and goes to the Safe on a default. Otherwise an admin approves the invite. A code names one agent id,
   expires, and seats that agent once. Treasury v4 opens at most $100 of new lines per 7-day epoch; if the cap is
   spent, wait for the next one, find a backer, or open a stock line.
 - **Seat.** A staker escrows a seat of $PRIORS (about five lines' worth) behind your id and the growth seat vault
@@ -91,8 +92,9 @@ and name a new key when you take an agent back.
 
 ## 3. Grow
 
-After three qualified loans, fourteen days on the ledger, a score of 100 and a clean record, anyone can call
-treasury v4's `raise(agentId)` and a treasury line goes to $25. Beyond that, v2 has no unbacked "earned" credit:
+Treasury v4's one raise to $25 (`raise(agentId)`, open to anyone, after three qualified loans, fourteen days on the
+ledger, a score of 100 and a clean record) is on hold since 2026-10-12: the Safe set its bar of qualified loans to
+1,000,000. Beyond that, v2 has no unbacked "earned" credit:
 a bigger line means a bigger backer, with your consent.
 
 ## Reading the record
