@@ -1309,12 +1309,14 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       const maxBorrow = dollars(max_borrow_usd ?? 0, "max_borrow_usd");
       if (maxBorrow > maxBorrowCeiling) throw new ToolError(`max_borrow_usd ${X.formatUsdg(maxBorrow)} is above this server's ceiling of ${usd(maxBorrowCeiling)} (PRIORS_MAX_BORROW_USD).`);
       if (maxBorrow > 0n && session.borrowed + maxBorrow > borrowTotalCap) throw new ToolError(`this could bring what is borrowed in this session to ${usd(session.borrowed + maxBorrow)}, above ${usd(borrowTotalCap)} (PRIORS_MAX_BORROW_TOTAL_USD).`);
+      reserveDay(0n, maxBorrow); // the day's borrowing limit (PRIORS_MAX_BORROW_DAY_USD), before anything is moved
+      // the most it may move and borrow, from its check with no await between (GHSA-cq9v) until it ends: counted after
+      // the reads below, a call made once the hold of one stalled in them had ended passed both caps beside it (GHSA-24qq)
+      count("bridged", amount); count("borrowed", maxBorrow);
       const f = await settleFlight();
       if (f) throw new ToolError(blocked(f));
       const float = await bridge.floatOf(wallet.address);
       if (float + amount > maxBaseFloat) throw new ToolError(`this would bring the Base float to about ${X.formatUsdg(float + amount)} USDC, above ${X.formatUsdg(maxBaseFloat)} (PRIORS_MAX_BASE_FLOAT_USD); it holds ${X.formatUsdg(float)} now. Nothing was done.`);
-      reserveDay(0n, maxBorrow); // the day's borrowing limit (PRIORS_MAX_BORROW_DAY_USD), before anything is moved
-      count("bridged", amount); count("borrowed", maxBorrow); // the most it may move and borrow, until it ends (GHSA-cq9v)
       // What stays on Robinhood Chain: what Autopay pulls in the next 24 h, and the USDG of payments signed there and not
       // settled (the borrow-the-gap rule alone does not know either).
       const nowS = Math.floor(Date.now() / 1000);

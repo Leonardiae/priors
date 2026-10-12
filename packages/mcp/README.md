@@ -171,7 +171,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.8.4"],
+      "args": ["-y", "@priors/mcp@0.8.5"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -193,7 +193,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.8.4"],
+      "args": ["-y", "@priors/mcp@0.8.5"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -206,7 +206,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.8.4' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.8.5' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -243,7 +243,10 @@ they require: without it the server does not start) and for the wallet whose key
 every process that shares `PRIORS_STATE_DIR`, kept as one file per money call under `<state dir>/daily-agent-<id>/` and
 `<state dir>/daily-wallet-<address>/`. Every key and every client acting for the agent shares one count, and a key run
 under another agent id still shares its wallet's. A call counts at the most it may sign or borrow (`max_price_usd`,
-`max_borrow_usd`) while it runs, then at what it did; one cut short by a crash stays counted at its most for that day.
+`max_borrow_usd`) while it runs, then at what it did, in the UTC day it ended (a borrow sent just before 00:00 UTC that
+lands after counts in the new day). A call still in flight at 00:00 UTC counts in the new day too, however long its
+transaction takes, so a call another process makes after midnight already sees it; one cut short by a crash stays
+counted at its most for the day it started and the two days after.
 Two processes racing for the last dollar never both get it. Only a server that sets a daily limit counts toward it, so
 give every client that uses the agent's key the same limits. `PRIORS_MAX_BORROW_DAY_USD=0` turns borrowing off;
 `credit_status` shows what is used today.
@@ -259,7 +262,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.8.4"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.8.5"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -271,7 +274,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.8.4"]
+    args: ["-y", "@priors/mcp@0.8.5"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -298,7 +301,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.8.4 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.8.5 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

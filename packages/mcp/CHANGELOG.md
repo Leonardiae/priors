@@ -1,5 +1,19 @@
 # @priors/mcp changelog
 
+## 0.8.5 (2026-10-12)
+
+- **Money counts in the UTC day it lands** (GHSA-266h-jfr9-42cx). A call reserved its room in the day it started and
+  kept what it did there, so a borrow sent before 00:00 UTC that landed after was invisible to the new day's
+  `PRIORS_MAX_BORROW_DAY_USD` (and to `credit_status`'s "Today"), and a day could carry twice its limit; the same for
+  `PRIORS_MAX_SPEND_DAY_USD`. A call's money is now filed in the day it ends, and while a call is in flight every
+  process counts it in the days after the one it started, however long its transaction takes; one cut short by a
+  crash stays counted for the day it started and the two after.
+- **`fund_base` counts against the session caps from its check** (GHSA-24qq-9p83-8798). It checked
+  `PRIORS_MAX_BORROW_TOTAL_USD` and `PRIORS_MAX_BRIDGE_TOTAL_USD`, then read the transfer record and the Base float,
+  and only then counted, so a second call made while the first waited on a late Base read could pass both caps
+  beside it. It now counts right after the check, as `borrow` and `pay_url` do (GHSA-cq9v), and gives it back when it
+  is refused.
+
 ## 0.8.4 (2026-10-11)
 
 - **SeatVaultV5 lines work out of the box.** The bundled `deployments/4663.v2.json` names SeatVaultV5

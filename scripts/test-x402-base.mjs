@@ -914,6 +914,66 @@ export async function runX402BaseTests({ test, fork = false }) {
     assert.ok(b.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(b.text), b.text);
   });
 
+  // GHSA-24qq: fund_base checked the session caps, then awaited the transfer record and the Base float, and only then
+  // counted (GHSA-cq9v's count, two awaits late): a call made once the hold of one stalled in its float read had ended
+  // read a total that left the first out, and both borrowed. Clocks scaled as in test-mcp-call-budget.mjs: a 400 ms
+  // budget (45 s) and a 200 ms hold (HOLD_MAX_MS, 120 s).
+  /** A bridge whose next float read waits until released (a Base RPC that answers late). */
+  const stallingFloat = (bridge) => {
+    const st = { release: null, reached: null };
+    st.reached = new Promise((ok) => {
+      const read = bridge.floatOf;
+      let armed = true;
+      bridge.floatOf = async (a) => { if (armed) { armed = false; ok(); await new Promise((go) => { st.release = go; }); } return read(a); };
+    });
+    return st;
+  };
+  const RACE = { PRIORS_AGENT_ID: "7", PRIORS_MAX_BRIDGE_USD: "25", PRIORS_MAX_BRIDGE_TOTAL_USD: "100", PRIORS_MAX_BASE_FLOAT_USD: "100", PRIORS_MAX_BORROW_USD: "25", PRIORS_MAX_BORROW_TOTAL_USD: "25" };
+
+  await test("GHSA-24qq: fund_base counts what it may borrow from its cap check, before its Base reads: a call made after the hold of one stalled there is refused by PRIORS_MAX_BORROW_TOTAL_USD", async () => {
+    const credit = fakeCredit({ usdg: 0n }); // an empty wallet: each transfer borrows its whole amount
+    const bridge = fakeBridge();
+    const stall = stallingFloat(bridge);
+    const s = await baseServer({ bridge, credit, env: RACE, deps: { callBudgetMs: 400, holdMaxMs: 200 } });
+    const first = await s.call("fund_base", { amount_usd: 25, max_borrow_usd: 25 });
+    assert.ok(first.error && /did not finish within/.test(first.text), `the first answers its deadline while its float read waits: ${first.text}`);
+    await stall.reached;
+    await sleep(400); // the hold has ended (440 ms + 200 ms after the first arrived); the first call still waits for its read
+    const second = await s.call("fund_base", { amount_usd: 25, max_borrow_usd: 25 });
+    stall.release();
+    await sleep(150);
+    const gaps = credit.rec.filter((x) => x[0] === "borrowGap");
+    assert.equal(gaps.length, 1, `one loan against a session cap of 25, not ${gaps.length} (the second call answered: ${second.text.split("\n")[0]})`);
+    assert.equal(gaps[0][1].price, 25_000_000n);
+    assert.equal(bridge.calls.filter((c) => c[0] === "fund").length, 1, "one transfer");
+    // the call the model made later is the one refused, in words, at its check; the first (the user's go-ahead, whose
+    // answer said it may still complete) completes
+    assert.ok(second.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(second.text) && /50\.00 USDG, above 25\.00 USDG/.test(second.text), `the first call's 25 is in the total the second reads: ${second.text}`);
+    const more = await s.call("borrow", { amount_usd: 1, days: 7 });
+    assert.ok(more.error && /PRIORS_MAX_BORROW_TOTAL_USD/.test(more.text), `the 25 borrowed stays counted: ${more.text}`);
+  });
+
+  await test("GHSA-24qq: the same timing cannot pass PRIORS_MAX_BRIDGE_TOTAL_USD; a fund_base refused after its count (float above its cap) gives both totals back", async () => {
+    const bridge = fakeBridge();
+    const stall = stallingFloat(bridge);
+    const s = await baseServer({ bridge, env: { ...RACE, PRIORS_MAX_BRIDGE_TOTAL_USD: "10", PRIORS_MAX_BRIDGE_USD: "10" }, deps: { callBudgetMs: 400, holdMaxMs: 200 } });
+    const first = await s.call("fund_base", { amount_usd: 10 });
+    assert.ok(first.error && /did not finish within/.test(first.text), first.text);
+    await stall.reached;
+    await sleep(400);
+    const second = await s.call("fund_base", { amount_usd: 10 });
+    assert.ok(second.error && /PRIORS_MAX_BRIDGE_TOTAL_USD/.test(second.text), `the first call's 10 is in the bridged total: ${second.text}`);
+    stall.release();
+    await sleep(150);
+    assert.equal(bridge.calls.filter((c) => c[0] === "fund").length, 1, "10 moved, not 20");
+    // refused after its count, by the float: nothing stays counted
+    const f = await baseServer({ bridge: fakeBridge({ float: 99_000_000n }), env: RACE });
+    const full = await f.call("fund_base", { amount_usd: 5, max_borrow_usd: 25 });
+    assert.ok(full.error && /PRIORS_MAX_BASE_FLOAT_USD/.test(full.text), full.text);
+    const all = await f.call("borrow", { amount_usd: 25, days: 7 });
+    assert.ok(!all.error, `the refused call's 25 was given back to PRIORS_MAX_BORROW_TOTAL_USD: ${all.text}`);
+  });
+
   await test("MCP fund_base racing pay_url: one money call at a time (the payment waits for the transfer)", async () => {
     const order = [];
     let release;

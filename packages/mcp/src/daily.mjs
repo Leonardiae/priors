@@ -19,8 +19,18 @@
 // in (a count named after the wallet when the id was left out split one agent's day in two). And the wallet's,
 // "wallet-<address>": a key run under another agent id, by mistake or for a second agent it controls, still shares
 // one count of the money it holds. All of a call's files are created before any ledger is listed, so the argument
-// above holds in each. The day is the UTC date when the call starts; days before yesterday are deleted as new ones
-// begin. A file whose name is not a ledger entry is left alone and not counted.
+// above holds in each. Money counts in the UTC day it lands (GHSA-266h). A call reserves in the day it starts, and also
+// leaves a marker in <owner>/pending/, named after that day and its amounts, which every process counts in each day
+// after it (up to PENDING_DAYS) for as long as the call is in flight, however long its transaction takes to mine. Once
+// it ends, its entry becomes what it did, filed in the day it ended (never in a day before the one it started: a
+// clock set back moves nothing back), and only then does its marker go. So a borrow sent before 00:00 UTC that lands
+// after counts in the new day, and while it is still in flight a call another process makes after midnight already
+// sees it. A process that dies mid-call leaves its entry at its most in the day it started and its marker counted
+// PENDING_DAYS days more, the safe direction. Days before yesterday, and markers older than that count, are deleted as
+// new days begin. A file whose name is not a ledger entry is left alone and not counted.
+// SHORTCUT: a call still in flight more than PENDING_DAYS days after the day it started stops counting in later days.
+// Ceiling: none on this chain, whose sequencer includes or refuses a transaction within seconds and whose forced
+// inclusion is bounded to 24 h. Upgrade trigger: a money call that can stay in flight longer.
 import { closeSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -28,9 +38,14 @@ import { randomBytes } from "node:crypto";
 const ENTRY = /^(\d{1,30})-(\d{1,30})-\d{1,10}-[0-9a-f]{16}\.r$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const OWNER = /^(agent-\d{1,78}|wallet-0x[0-9a-f]{40})$/;
+const PENDING = "pending";
+const MARKER = /^(\d{4}-\d{2}-\d{2})_(\d{1,30})-(\d{1,30})-\d{1,10}-[0-9a-f]{16}\.r$/;
+/** The days after the one it started in which a call still in flight is counted. */
+export const PENDING_DAYS = 2;
 
 /** The UTC date of `ms` (YYYY-MM-DD). */
 export const utcDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+const dayPlus = (day, n) => utcDay(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000);
 
 /** The agent PRIORS_AGENT_ID names, as a BigInt (leading zeros dropped: 007 and 7 are one agent), or null when it is
  *  not a decimal id. */
@@ -56,6 +71,19 @@ function sum(dir, fs) {
   return { signed, borrowed };
 }
 
+/** What calls started in the PENDING_DAYS days before `day` and still in flight hold: their markers in `pdir`. */
+function inFlight(pdir, day, fs) {
+  let signed = 0n, borrowed = 0n;
+  let names;
+  try { names = fs.readdirSync(pdir); } catch (e) { if (e?.code === "ENOENT") return { signed, borrowed }; throw e; }
+  const oldest = dayPlus(day, -PENDING_DAYS);
+  for (const n of names) {
+    const m = MARKER.exec(n);
+    if (m && m[1] < day && m[1] >= oldest) { signed += BigInt(m[2]); borrowed += BigInt(m[3]); }
+  }
+  return { signed, borrowed };
+}
+
 /**
  * A daily ledger under `stateDir` that counts in every one of `owners` (ledgerOwners; or `owner`, one name).
  * `caps.signed` / `caps.borrowed` are base units, or null for no limit of that kind; each holds in every owner's
@@ -66,17 +94,29 @@ export function dailyLedger({ stateDir, owners, owner, caps, now = () => Date.no
   if (!list.length || !list.every((o) => OWNER.test(String(o)))) throw new Error(`not a daily ledger owner: ${list.join(", ")}`);
   const rootOf = (o) => join(stateDir, `daily-${o}`);
   const swept = new Map();
-  /** Days before yesterday go, once per owner and new day (best effort: a leftover day is never read again). */
+  /** Days before yesterday, and markers no day counts any more, go, once per owner and new day (best effort: a leftover
+   *  is never read again). */
   function sweep(o, today) {
     if (swept.get(o) === today) return;
     swept.set(o, today);
-    const yesterday = utcDay(Date.parse(`${today}T00:00:00Z`) - 86_400_000);
+    const yesterday = dayPlus(today, -1), oldest = dayPlus(today, -PENDING_DAYS);
     try { for (const d of fs.readdirSync(rootOf(o))) if (DAY.test(d) && d < yesterday) fs.rmSync(join(rootOf(o), d), { recursive: true, force: true }); } catch (_) { /* best effort */ }
+    try {
+      for (const n of fs.readdirSync(join(rootOf(o), PENDING))) {
+        const m = MARKER.exec(n);
+        if (m && m[1] < oldest) fs.unlinkSync(join(rootOf(o), PENDING, n));
+      }
+    } catch (_) { /* best effort */ }
   }
   const entryName = (s, b) => `${s}-${b}-${process.pid}-${randomBytes(8).toString("hex")}.r`;
   /** Takes a call's files back (a refusal, or a ledger that could not be written): best effort, since one left behind
-   *  only counts until the day ends, the safe direction. */
+   *  only counts too much, the safe direction. */
   const drop = (files) => { for (const f of files) { try { fs.unlinkSync(join(f.dir, f.name)); } catch (_) { /* counted */ } } };
+  /** What an owner's ledger holds on `day`: that day's entries, and the calls started before it still in flight. */
+  const totalOn = (o, day) => {
+    const a = sum(join(rootOf(o), day), fs), p = inFlight(join(rootOf(o), PENDING), day, fs);
+    return { signed: a.signed + p.signed, borrowed: a.borrowed + p.borrowed };
+  };
   return {
     caps,
     owners: list,
@@ -85,7 +125,7 @@ export function dailyLedger({ stateDir, owners, owner, caps, now = () => Date.no
       const day = utcDay(now());
       const out = { signed: 0n, borrowed: 0n };
       for (const o of list) {
-        const t = sum(join(rootOf(o), day), fs);
+        const t = totalOn(o, day);
         if (t.signed > out.signed) out.signed = t.signed;
         if (t.borrowed > out.borrowed) out.borrowed = t.borrowed;
       }
@@ -102,39 +142,61 @@ export function dailyLedger({ stateDir, owners, owner, caps, now = () => Date.no
       const files = [];
       try {
         for (const o of list) {
-          const dir = join(rootOf(o), day);
-          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
           sweep(o, day);
+          const dir = join(rootOf(o), day), pdir = join(rootOf(o), PENDING);
+          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          fs.mkdirSync(pdir, { recursive: true, mode: 0o700 });
           const name = entryName(signed, borrowed);
           fs.closeSync(fs.openSync(join(dir, name), "wx", 0o600));
-          files.push({ owner: o, dir, name });
+          files.push({ owner: o, day, dir, name });
+          // in flight: counted in the days after this one until it ends (GHSA-266h)
+          fs.closeSync(fs.openSync(join(pdir, `${day}_${name}`), "wx", 0o600));
+          files.push({ owner: o, day, dir: pdir, name: `${day}_${name}`, marker: true });
         }
       } catch (e) { drop(files); throw e; }
-      // each ledger is listed only once all of this call's files exist: a racing process sees them, or this one sees its
-      for (const f of files) {
-        let total;
-        try { total = sum(f.dir, fs); } catch (e) { drop(files); throw e; }
-        for (const [kind, want] of [["signed", signed], ["borrowed", borrowed]]) {
-          const cap = caps[kind];
-          if (cap === null || cap === undefined || want === 0n || total[kind] <= cap) continue;
-          drop(files);
-          throw Object.assign(new Error(`daily ${kind} limit`), { code: "DAY_LIMIT", kind, owner: f.owner, used: total[kind] - want, cap, want });
+      // each ledger is listed only once all of this call's files exist: a racing process sees them, or this one sees its.
+      // A reservation that straddled 00:00 UTC is held against the new day too (its marker counts there).
+      const after = utcDay(now());
+      const days = after > day ? [day, after] : [day];
+      for (const o of list) {
+        for (const d of days) {
+          let total;
+          try { total = totalOn(o, d); } catch (e) { drop(files); throw e; }
+          for (const [kind, want] of [["signed", signed], ["borrowed", borrowed]]) {
+            const cap = caps[kind];
+            if (cap === null || cap === undefined || want === 0n || total[kind] <= cap) continue;
+            drop(files);
+            throw Object.assign(new Error(`daily ${kind} limit`), { code: "DAY_LIMIT", kind, owner: o, used: total[kind] - want, cap, want });
+          }
         }
       }
       return { files, signed, borrowed };
     },
-    /** Once the call has ended: its entries become what it really did (signed, borrowed: what the server counted, which
-     *  includes anything that may have happened, like a payment signed before the request failed), or go when that is
-     *  nothing. Best effort: an entry that cannot be renamed stays at its most. */
+    /** Once the call has ended: in each owner's ledger its entry becomes what it really did (signed, borrowed: what the
+     *  server counted, which includes anything that may have happened, like a payment signed before the request failed),
+     *  filed in the UTC day it ends but never in a day before the one it started (GHSA-266h), or goes when that is
+     *  nothing; then its in-flight marker goes. Best effort: an entry that cannot be moved stays at its most, and its
+     *  marker stays too, so the days after still count it. */
     settle(r, signed, borrowed) {
       if (!r) return;
       const s = signed < 0n ? 0n : signed, b = borrowed < 0n ? 0n : borrowed;
-      if (s === r.signed && b === r.borrowed) return;
-      for (const f of r.files) {
+      const today = utcDay(now());
+      for (const o of list) {
+        const entry = r.files.find((f) => f.owner === o && !f.marker), marker = r.files.find((f) => f.owner === o && f.marker);
+        if (!entry) continue;
+        const start = entry.day ?? entry.dir.slice(-10);
+        const day = today > start ? today : start;
+        const dir = join(rootOf(o), day);
+        let done = true;
         try {
-          if (s === 0n && b === 0n) fs.unlinkSync(join(f.dir, f.name));
-          else fs.renameSync(join(f.dir, f.name), join(f.dir, entryName(s, b)));
-        } catch (_) { /* stays counted at its most */ }
+          if (s === 0n && b === 0n) fs.unlinkSync(join(entry.dir, entry.name));
+          else if (entry.dir !== dir || s !== r.signed || b !== r.borrowed) {
+            if (entry.dir !== dir) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            fs.renameSync(join(entry.dir, entry.name), join(dir, entryName(s, b)));
+          }
+        } catch (_) { done = false; /* stays counted at its most */ }
+        // the entry is final first: a crash between the two leaves the marker counted, never nothing
+        if (done && marker) drop([marker]);
       }
     },
   };
