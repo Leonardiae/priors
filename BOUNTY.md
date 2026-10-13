@@ -179,11 +179,13 @@ ones:
   seat vault (V4, a $50 line after 10 repaid loans) takes no new seats since 2026-10-09. A SeatVaultV5 line needs the
   agent owner's own $PRIORS staked behind it and the owner's consent to V5's root. A backer needs the owner's consent.
   Credit without one of those is "High".
-- **Stock lines.** The stock vault vouches a line of the token's loan-to-value (25-50%, plus a record bonus) of the
-  deposit's Chainlink value, at most $250, out of its own stake. Every new loan asks the vault again: a fresh price,
+- **Stock lines.** The stock vault vouches a line of the token's loan-to-value (25-70%, plus a record bonus) of the
+  deposit's Chainlink value, at most $500, out of its own stake. Every new loan asks the vault again: a fresh price,
   no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the
-  collateral's value now. A default seizes the whole deposit to the Safe and burns the vault's stake, never
-  lenders'. Drawing past that, or moving a depositor's tokens without a default, is a finding.
+  collateral's value now. A default seizes to the Safe tokens worth what is owed plus a 20% buffer at the last valid
+  price (all of them when the price can't be used), gives the rest back to the depositor, and burns the vault's stake,
+  never lenders'. Drawing past that, seizing more than that, or moving a depositor's tokens without a default, is a
+  finding.
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
   (AI-1) can cost a backer money within the per-epoch caps stated in SECURITY-v2.md (what one week of the seat vaults
   can lose is X-5), and holding stake only while

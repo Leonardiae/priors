@@ -54,7 +54,7 @@ Other v2 changes:
 | Seats V3 (root #6234) | seat ≈ $25 of $PRIORS, resized with the price by the SeatSizer `0xd24B…5E61` within [10,000, 2,000,000] (12,000 on 2026-09-25; 10,000, the floor, on 2026-09-29) · line $5 · 50% of the seat burnt on a default · at most 10 open seats (all 10 open on 2026-09-29) · $50 of new lines per 7-day epoch |
 | Seat gates | the agent has repaid at least 3 loans; a seat idle 30 days can be expired by anyone |
 | Growth seats V4 (root #6466, live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer `0x97C4…8777` within [110,000, 20,000,000]) · line $50 · 50% of the seat burnt on a default · agent has repaid at least 10 loans · loans of at most 7 days · 20 open seats · $1,000 of new lines per 7-day epoch · protocol seats closed |
-| Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-50% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · $1,000 of new lines per 7-day epoch · the whole deposit seized on a default · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
+| Stock lines (`StockVault`, root #6424, since 2026-09-28) | 35 Robinhood stock tokens · line 25-70% of the deposit's Chainlink value by token (`deployments/stock-ltv.4663.json`), plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $500 a line · $2,000 of open lines per token ($1,000 on CRCL, CRWV, NBIS, SNDK, USAR; $500 on ASML, IONQ, RKLB; none on CLSK, RGTI) · $1,000 of new lines per 7-day epoch · on a default, what is owed plus 20% seized and the rest given back (all of it when the price can't be used) · a line idle 30 days (7 if never drawn) can be expired by anyone, tokens back |
 | Invite bond (`InviteBond`) | 5 USDG locked by the agent's owner before the invite bot signs an automatic invite · back once the agent has repaid 3 qualified loans with none open, or after 4 days if it holds no line · forfeited to the Safe on a default |
 
 The Participate page reads these live; if this table and the chain disagree, the chain is right.
@@ -95,7 +95,7 @@ else.
 
 ⛔ **Repay before the due date.** Three days past due, anyone can mark the loan defaulted: the record is
 permanently marked, the owner address is marked (`ownerDefaults`), and the sponsor pays for it: its stake, half the
-staker's seat, or, on a stock line, the whole deposit. Borrow only what the agent can repay on time.
+staker's seat, or, on a stock line, tokens worth what is owed plus a 20% buffer (the rest goes back to the depositor). Borrow only what the agent can repay on time.
 
 ## SDK (`sdk/priors-v2.mjs`)
 

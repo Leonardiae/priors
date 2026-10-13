@@ -279,12 +279,14 @@ pay, borrow and repay with the MCP tools.
 Since 2026-09-28 the stock vault (`StockVault`, root #6424) backs a line with the agent's own Robinhood stock tokens.
 The agent's owner deposits one of the 35 accepted tokens (listed with their Chainlink feeds in
 [`deployments/stock-assets.4663.json`](deployments/stock-assets.4663.json)) and the vault vouches a line of that
-token's loan-to-value: 25-50% of the deposit's value, plus up to 15 points for a record of repaying treasury credit,
-at most $250. Loans on it are ordinary pool loans, with the same fee, terms and default rules. Every new loan is
+token's loan-to-value: 25-70% of the deposit's value by token, plus up to 15 points for a record of repaying treasury
+credit, never above 70%, at most $500. Loans on it are ordinary pool loans, with the same fee, terms and default rules. Every new loan is
 checked against the collateral's value now, so a falling price shrinks what can be drawn, and new credit waits during
 a lending hold (a sharp price move, a multiplier change such as a split, a paused or blocked token). Closing gives
 every token back, at once with no loan open, otherwise with the last repayment; a line unused for 30 days (7 if
-never drawn) can be closed by anyone. A default seizes the whole deposit.
+never drawn) can be closed by anyone. A default seizes tokens worth what the agent owes (principal and fees) plus a 20%
+buffer, at the last valid price, and gives the rest back to the depositor; with no usable price, or a deposit worth
+less, it seizes all of them (the fair default, since 2026-10-13).
 
 ```js
 import { resolveV2 } from "priors/env";
@@ -366,7 +368,7 @@ v2 findings.
 | Treasury v4 | first line $5 · raise to $25 · $100 of new lines per 7-day epoch · idle after 30 days |
 | Seats (`SeatVaultV3`, root #6234) | seat ≈ $25 of $PRIORS (12,000 on 2026-09-25, resized with the price by the SeatSizer) · line $5 · 50% burnt on default · agent needs 3 repaid loans · seat expires after 30 idle days · $50 of new lines per 7-day epoch |
 | Growth seats (`SeatVaultV4`, root #6466; live since 2026-09-29) | seat ≈ 5 lines of $PRIORS (120,000 at deployment, resized by its own SeatSizer within [110,000, 20,000,000]) · line $50 · 50% burnt on default · agent needs 10 repaid loans · loans of at most 7 days · 20 open seats · seat expires after 30 idle days · $1,000 of new lines per 7-day epoch · protocol seats closed |
-| Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-50% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $250 a line · $1,000 of new lines per 7-day epoch · $1,000 of open lines per token ($500 on CRCL, CRWV, NBIS, RGTI, SNDK, USAR) · whole deposit seized on default · idle after 30 days (7 if never drawn) |
+| Stock lines (`StockVault`, root #6424) | 35 stock tokens · line 25-70% of the deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70% · at most $500 a line · $1,000 of new lines per 7-day epoch · $2,000 of open lines per token ($1,000 on CRCL, CRWV, NBIS, SNDK, USAR; $500 on ASML, IONQ, RKLB; none on CLSK, RGTI) · on a default, what is owed plus 20% seized and the rest given back · idle after 30 days (7 if never drawn) |
 | Minimum root stake | $10 |
 | Pool owner | `PoolSteward` since 2026-10-06 (no owner, not upgradeable), which only the `TimelockController` can call (the Safe proposes and executes, no admin; a 48 h delay, none from 2026-10-11 19:49 UTC), within a fixed policy: sponsor ≤ 25%, reserve ≤ 40%, lenders ≥ 35%, fee ≤ 2% per 30 days; the Safe is guardian (pause ≤ 14 days, exits never pause) |
 
@@ -473,7 +475,7 @@ src/TreasurySponsor.sol      v1 treasury (v3)
 src/ReserveFunder.sol        v1 creator-fee sweep into the reserve
 src/libraries/ScoreLib.sol   the trust score (shared by v1 and the v2 lens)
 src/mocks/                   MockUSDC (6 decimals), MockIdentityRegistry, MockPonsFeeEscrow
-test/                        1,066 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
+test/                        1,130 tests: v2 units, invariants, audit PoCs and fixes (audit-v2/, audit-final/,
                              review-v2/, audit-v4/, audit-r2/, audit-sizer/), the stock vault's (StockVault*), the growth seat
                              vault's (SeatVaultV4*), SeatVaultV5's (v5/), and the v1 suite
 script/DeployV2.s.sol        deploys the v2 set under a 48 h timelock (the live one's delay is 0 from 2026-10-11 19:49 UTC),
@@ -513,7 +515,7 @@ small and we say so up front rather than after you have spent a week.
 ## Working on it
 
 ```bash
-forge test                     # 1,066 tests, all green (fork-only tests skip without FORK_RPC)
+forge test                     # 1,130 tests, all green (fork-only tests skip without FORK_RPC)
 npm test                       # SDK, CLI and publish-guard checks (needs Foundry for the v1 end-to-end run)
 npm run test:v2                # the v2 SDK and x402 client, network-free
 npm run devnet                 # local chain + deployed, bootstrapped v1 pool

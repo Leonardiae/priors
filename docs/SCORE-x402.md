@@ -67,7 +67,7 @@ A possible shape, on top of today's parts (weights set from data, not guesses):
 
 - **Lines sized by income**, not by who vouched: line ≤ a share of verified 30-day income (the income-backed rung, `docs/SCORE-v2.md`),
   capped per cycle, so the line always grows slower than the record behind it.
-- **Lines against tokenized assets**, live since 2026-09-28: the stock vault lends 25-50% of a Robinhood stock token
+- **Lines against tokenized assets**, live since 2026-09-28: the stock vault lends 25-70% of a Robinhood stock token
   deposit's value by token, plus up to 15 points for a record of repaid treasury credit, never above 70%.
 - **A score others can read**: published to the ERC-8004 reputation registry, so any app on the chain can use it.
 

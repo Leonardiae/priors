@@ -56,8 +56,8 @@ await s.openStockLine(agentId, token, "0.05"); // the stock vault: a line agains
 - **Backer.** Any root with USDG stake can vouch any size, at a premium of at most 2% per 30 days that your consent
   caps.
 - **Stock line.** Deposit one of the 35 accepted Robinhood stock tokens (`s.stockAssets()` lists them with their
-  price and loan-to-value) and the stock vault vouches 25-50% of its value, at most $250. New loans follow the
-  collateral's value now; a default seizes the whole deposit; `s.closeStockLine(agentId)` gives the tokens back. It
+  price and loan-to-value) and the stock vault vouches 25-70% of its value by token, at most $500. New loans follow the
+  collateral's value now; a default seizes what is owed plus a 20% buffer and gives the rest back; `s.closeStockLine(agentId)` gives the tokens back. It
   counts as your own money in Priors Score v2. See the README's "Stock lines".
 
 Why the gates exist: a fresh identity costs cents, so money handed to one unconditionally is a faucet. An invite,

@@ -1,6 +1,6 @@
 {
   "chainId": 4663,
-  "status": "live: applied at deployment (setAsset with each LTV, setRecordBonus); read back from the vault 0xbEcd07EC689988e16b870C121756C4c2C8cb02B6 on 2026-09-28. The owner (the Safe) can change any of it with setAsset and setRecordBonus; the chain is right if this file and the vault disagree.",
+  "status": "live: applied at deployment (setAsset with each LTV, setRecordBonus); read back from the vault 0xbEcd07EC689988e16b870C121756C4c2C8cb02B6 on 2026-09-28. Changed by the Safe's batch of 2026-10-12 (read back on chain that day): SGOV 70%, SPY and QQQ 60%, PT-USDG 60% (not in this file: deployments/pt-usdg.4663.json), the record bonus's step 0.05 USDG; lineCap 0 on CLSK and RGTI and 500 on IONQ, RKLB and ASML (lineCaps are not in this file). The owner (the Safe) can change any of it with setAsset and setRecordBonus; the chain is right if this file and the vault disagree.",
   "why": "The stocks readiness review of 2026-09-28 (funder economics): at one 50% for every name the funder under-prices the default on the most volatile stocks (NBIS, RGTI, SNDK, USAR, CRWV, CRCL), and RGTI, IONQ and CLSK have the thinnest on-chain exits. Index funds, T-bills and megacaps keep 50%.",
   "ltvBps": {
     "AAPL": 5000,
@@ -26,14 +26,14 @@
     "NVDA": 5000,
     "ORCL": 5000,
     "PLTR": 4000,
-    "QQQ": 5000,
+    "QQQ": 6000,
     "RGTI": 2500,
     "RKLB": 3000,
-    "SGOV": 5000,
+    "SGOV": 7000,
     "SLV": 5000,
     "SNDK": 3000,
     "SPCX": 4000,
-    "SPY": 5000,
+    "SPY": 6000,
     "TSLA": 4000,
     "TSM": 5000,
     "USAR": 3000,
@@ -44,9 +44,9 @@
       6228
     ],
     "trustedRootsAre": "treasury v4 only. Not the seat vaults: an owner can seat its own agent with its own $PRIORS and get the fees back, so their fees are not someone else's risk.",
-    "feeStep": 20000,
+    "feeStep": 50000,
     "bpsPerStep": 100,
     "maxBonusBps": 1500,
-    "scale": "a step is 0.02 USDG of sponsor fees paid under the treasury: at the live pool (1% per 30 days, 25% to the sponsor) about 240 dollar-days of treasury credit repaid. +1 point per step on a 50% stock, scaled down with the stock's own loan-to-value (a 25% stock gets half), at most +15 on a 50% stock (about 3,600 dollar-days, e.g. a $25 treasury line drawn for 144 days). Never above 70% in total. Retune with the pool's fee params."
+    "scale": "a step is 0.05 USDG of sponsor fees paid under the treasury since 2026-10-12 (0.5 from 2026-10-10, 0.02 at deployment): at the live pool (1% per 30 days, 25% to the sponsor) about 600 dollar-days of treasury credit repaid. +1 point per step on a 50% stock, scaled down with the stock's own loan-to-value (a 25% stock gets half), at most +15 on a 50% stock (about 9,000 dollar-days). Never above 70% in total. Retune with the pool's fee params."
   }
 }

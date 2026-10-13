@@ -360,13 +360,19 @@ contract StockVaultTest is StockVaultBase {
         vault.close(AGENT);
     }
 
-    function test_default_seizesThroughOnRelease_whenOnDefaultFailed() public {
+    /// onDefault fails: the pool's onRelease that follows (the dead agent's residual line) does not seize on a debt that
+    /// misses the failed default (the fair default, 2026-10-12): the position stays open, and settle, which sums the
+    /// pool's loans, seizes it (here every token: the price is stale by the time the loan defaults).
+    function test_default_whenOnDefaultFailed_settleSeizes() public {
         _open(AGENT_PK, AGENT, SHARE / 2);
         uint256 loanId = _borrow(agentOp, AGENT, 100 * USDC);
         vm.warp(pool.getLoan(loanId).defaultableAt + 1);
         vm.mockCallRevert(address(vault), abi.encodeWithSelector(StockVault.onDefault.selector), "");
         pool.markDefault(loanId);
         vm.clearMockedCalls();
+        assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Open));
+        vm.prank(anyone);
+        vault.settle(AGENT, loanId);
         assertEq(uint256(vault.getPosition(AGENT).status), uint256(StockVault.Status.Seized));
         assertEq(spy.balanceOf(treasury), SHARE / 2);
     }
