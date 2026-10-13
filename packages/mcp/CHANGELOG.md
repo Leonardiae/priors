@@ -1,5 +1,41 @@
 # @priors/mcp changelog
 
+## 0.9.2 (2026-10-13)
+
+- **Merchant text can no longer write a line outside the data fence, or spell its marker.** The marker's keyword was
+  rewritten only when split by a space, a hyphen or a soft or zero-width character, and only listed brackets were
+  replaced, so a merchant could still close the fence early with an invisible separator (U+180E, U+2063) and
+  look-alike brackets (U+22D8 and U+22D9, U+2770 and U+2771, U+27EC and U+27ED, U+2991 to U+2996), and write the lines
+  after it as if they were this server's. Every line inside the fence now starts with U+2502 and a space, whatever
+  line break the merchant writes (LF, CR, CRLF, NEL, U+2028, U+2029, as a character or as an HTML reference such as
+  `&#10;` or `&NewLine;`), so none of its lines stands outside, however it spells or words a boundary; only the
+  closing marker with the call's own id ends the fence, and its label says so. Outside the fence, every third-party
+  string an answer quotes (an error a library or a node wrote, a bridge's status, the echoed search word) and every
+  string and property name of structured content is read the same way, with such a reference as a space; a merchant's
+  link is given only whole and as it is: not when the URL parser or cleaning would change it as the merchant wrote it
+  (a control character, a tab or line break, a space at either end), not when the fence would change it, as written or
+  with its percent-encoding read (`%0A`), not when that encoding does not decode cleanly, and not when it is too long
+  to show whole (over 200 characters); then it reads "no url", since a changed or cut link would be another URL.
+  Within its lines, merchant text is read as a reader would read it: HTML character references decoded (numeric ones
+  however many digits they have), compatibility forms (fullwidth, mathematical, and ones that read as two letters,
+  such as U+33CA), no combining marks or invisible characters, any case, and Cyrillic, Greek, Armenian and
+  small-capital look-alikes. The keyword comes out as `merchant[-]data` wherever it is split by nothing, a space, a
+  dash or any other character outside ASCII, and also by ASCII punctuation where it has a marker's shape (`<<end
+  merchant_data ...>>`); a line break inside the fence ends it. Brackets change only in that shape (an opening run
+  right before `end` or the keyword, a closing run right after the keyword or its id) with a marker's evidence (the
+  word `end`, not the end of `friend` or `backend`; an id; or two brackets), and in runs of two or more facing the
+  same way, which become single angle quotation marks (U+2039, U+203A). Everything else is left as written: a single
+  bracket, quotation mark or comparison sign (`price<merchant-data`, `merchant-data price < 5`, U+2264 and U+2265, CJK
+  brackets), a `merchant_data` key, a `/merchant/data` path, or a URL ending in `merchant` before a line starting
+  `data`. A doubled `<<` in merchant text (a C++ stream, a shell here-document) now reads as two U+2039.
+  `find_services` echoes the search word the same way. The hosted server's `find_services` uses the same code
+  (`src/fence.mjs`).
+- **`autopay_on` approves at most 4 x the limit per loan.** The README and the tool's description said the budget is
+  4 x the limit and never unlimited, but a `budget_usd` above it was approved as given (1,000,000 USDG on a 25 USDG
+  limit). A larger `budget_usd` is now refused before anything is sent; it can still set a smaller budget, down to one
+  loan's limit. An allowance approved above it before stays until `autopay_off` with `clear_budget: true`.
+- On `@priors/x402` 0.7.1, unchanged.
+
 ## 0.9.1 (2026-10-13)
 
 - **`stock_line_request` checks the caps against the line the deposit opens.** The deposit is the line's need × 1.3,

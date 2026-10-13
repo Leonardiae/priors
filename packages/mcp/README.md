@@ -38,7 +38,7 @@ repaying.
 | `savings(address?)` | what the wallet (or any address) has saved in the savings vault, how much can come out right now, and the USDG in the wallet | no (with `address`) |
 | `save(amount_usd)` | move spare USDG from the wallet into the savings vault, where it earns the vault's rate (at most `PRIORS_MAX_SAVE_USD` per call, `PRIORS_MAX_SAVE_TOTAL_USD` per run); needs ETH for gas | yes |
 | `unsave(amount_usd? \| all)` | take USDG back out of savings into the wallet: a normal withdrawal, and when that is not enough, the rest from the vault's other markets in the same transaction (only where that costs no penalty); refused before any transaction when even that cannot pay it; needs ETH for gas | yes |
-| `autopay_on(cap_usd?, use_savings?, late?, budget_usd?)` | turn on Autopay: the wallet approves AutoRepay for a budget (4 x the limit per loan, never unlimited) and enrolls, so each loan is repaid from the wallet (then its savings, if chosen) in the 6 hours before it is due, with no call per loan, while the wallet holds enough. It makes an on-time repayment more likely; it is not a promise. Default limit: the line plus a 30-day fee, at most `PRIORS_MAX_AUTOPAY_USD`; call again to approve more. Works once AutoRepay is deployed; needs ETH for gas | yes |
+| `autopay_on(cap_usd?, use_savings?, late?, budget_usd?)` | turn on Autopay: the wallet approves AutoRepay for a budget (4 x the limit per loan, never more: `budget_usd` can only set less) and enrolls, so each loan is repaid from the wallet (then its savings, if chosen) in the 6 hours before it is due, with no call per loan, while the wallet holds enough. It makes an on-time repayment more likely; it is not a promise. Default limit: the line plus a 30-day fee, at most `PRIORS_MAX_AUTOPAY_USD`; call again to approve more. Works once AutoRepay is deployed; needs ETH for gas | yes |
 | `autopay_off(clear_budget?)` | turn Autopay off (and with `clear_budget`, set the approvals to 0) | yes |
 | `score_of(agent_id)` | any agent's on-chain score (0 to 1000) and repayment record, plus its Priors Score v2 and trust rung when published | no |
 | `find_services(query?)` | services registered with the Priors facilitator that accept USDG (`GET /merchants`), each marked as approved by Priors or self-registered and not reviewed | no |
@@ -178,7 +178,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.9.1"],
+      "args": ["-y", "@priors/mcp@0.9.2"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -200,7 +200,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.9.1"],
+      "args": ["-y", "@priors/mcp@0.9.2"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -213,7 +213,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.9.1' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.9.2' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -269,7 +269,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.9.1"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.9.2"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -281,7 +281,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.9.1"]
+    args: ["-y", "@priors/mcp@0.9.2"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -308,7 +308,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.9.1 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.9.2 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`
