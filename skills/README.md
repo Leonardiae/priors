@@ -32,7 +32,7 @@ The plugin's server cannot sign. To pay x402 URLs, borrow and repay from Claude 
 [`@priors/mcp`](../packages/mcp), next to it:
 
 ```bash
-claude mcp add priors --scope user -e 'PRIORS_KEY=${PRIORS_KEY}' -- npx -y @priors/mcp@0.9.0
+claude mcp add priors --scope user -e 'PRIORS_KEY=${PRIORS_KEY}' -- npx -y @priors/mcp@0.9.1
 ```
 
 Keep the single quotes. Claude Code then saves the reference `${PRIORS_KEY}`, not a key, and reads the value from the

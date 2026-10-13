@@ -104,11 +104,11 @@ const ADDRESSES = JSON.parse(readFileSync(new URL("../deployments/4663.v2.json",
 /** The stock tokens the stock vault accepts (a copy of the repository's deployments/stock-assets.4663.json). */
 const STOCK_ASSETS = JSON.parse(readFileSync(new URL("../deployments/stock-assets.4663.json", import.meta.url), "utf8")).assets;
 // stock_line_request's reads of the stock vault beyond @priors/x402's: the token's cap and open lines, the vault's
-// maxLine, the week's room and its root, and the fair default's buffer (an implementation without seizeBufferOf keeps
-// the whole deposit on a default: null)
+// maxLine, the week's room and its root, the fair default's buffer (an implementation without seizeBufferOf keeps
+// the whole deposit on a default: null), and a named agent's loan-to-value (ltvOf: the token's own plus its record bonus)
 const STOCK_LINE_ABI = [
   "function params() view returns (uint256 ltvBps, uint256 maxLine, uint256 epochCap, uint64 epochLength)", "function epochRoom() view returns (uint256)", "function agentId() view returns (uint256)",
-  "function openLinesOf(address token) view returns (uint256)", "function seizeBufferOf(address token) view returns (uint256)",
+  "function openLinesOf(address token) view returns (uint256)", "function seizeBufferOf(address token) view returns (uint256)", "function ltvOf(uint256 id, address token) view returns (uint256)",
   "function assets(address token) view returns (address feed, uint64 maxAge, uint8 tokenDecimals, uint8 feedDecimals, bool enabled, uint16 ltvBps, uint128 lineCap)",
 ];
 // Go mode's account page, where the owner reviews what the agent asked for (the hosted server's APP_URL)
@@ -698,13 +698,24 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       const v = new ethers.Contract(addresses.stockVault, STOCK_LINE_ABI, provider);
       const meta = STOCK_ASSETS.find((a) => a.symbol.toUpperCase() === symbol) || null;
       const [vp, room, root, pp] = await Promise.all([v.params(), v.epochRoom(), v.agentId(), contracts.pool.getParams()]);
-      let asset = null;
+      let asset = null, agentLtv = null;
       if (meta) {
-        const [[x], a, lines, buffer] = await Promise.all([C.stockAssets(contracts, [meta]), v.assets(meta.token), v.openLinesOf(meta.token), v.seizeBufferOf(meta.token).catch(() => null)]);
+        // a named agent's own loan-to-value, its record bonus included: the vault opens its line at that, not the token's
+        // own (ltvOf(0, token), the stockAssets figure); unread, null, and the request is refused (sdk stock-line.mjs)
+        const [[x], a, lines, buffer, ltv] = await Promise.all([C.stockAssets(contracts, [meta]), v.assets(meta.token), v.openLinesOf(meta.token), v.seizeBufferOf(meta.token).catch(() => null),
+          id != null ? v.ltvOf(BigInt(id), meta.token).catch(() => null) : null]);
         asset = { symbol: meta.symbol, name: meta.name, token: meta.token, answer: x.answer, decimals: meta.decimals, feedDecimals: meta.feedDecimals, ltvBps: x.ltvBps, usable: !!x.usable, hold: Number(x.hold || 0), holdReason: x.holdReason || "", lineCap: a.lineCap, openLines: lines, seizeBufferBps: buffer };
+        agentLtv = ltv;
       }
       let agent = null;
-      if (id != null) { const st = await C.creditStatus(contracts, id); agent = { id: Number(id), defaulted: !!st.defaulted, isRoot: !!st.isRoot, sponsor: Number(st.sponsor), activeLoans: st.openLoans.length, stockLine: !!st.collateral }; }
+      if (id != null) {
+        const st = await C.creditStatus(contracts, id);
+        // a default marked on the owner's account (the pool's ownerDefaults): StockVault.open refuses every agent of it
+        // the owner unread is never "no default on the owner's account" (review 2026-10-13): refused, try again
+        if (!st.owner) throw new ToolError(`Agent #${Number(id)}'s owner couldn't be read from the chain just now, so whether its owner has a default can't be told: try again in a minute.`);
+        const ownerDefaulted = (await contracts.pool.ownerDefaults(st.owner)) > 0n;
+        agent = { id: Number(id), defaulted: !!st.defaulted, ownerDefaulted, isRoot: !!st.isRoot, sponsor: Number(st.sponsor), activeLoans: st.openLoans.length, stockLine: !!st.collateral, ltvBps: agentLtv };
+      }
       return { asset, vault: { maxLine: vp.maxLine, epochRoom: room, root: Number(root) }, pool: { feeBps: pp.feeBps, minLoan: pp.minLoan, graceDays: Number(pp.grace) / 86400 }, agent, count: STOCK_ASSETS.length };
     },
     quote: (id, amount, term) => C.quoteBorrow(contracts, id, amount, term),
@@ -1142,16 +1153,26 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
   // sdk/stock-line.mjs). It reads; it never deposits, signs or holds the owner's tokens.
   tool("stock_line_request", {
     title: "Ask the owner for a stock-backed line",
-    description: "When the agent's Priors line is too small for a task, ask its owner for a line backed by a Robinhood stock token the owner holds: checks the token takes new lines now (price, holds, caps, the week's room) and the agent can take one, sizes the deposit to the line asked for (with room for a 23% fall), states the cost in cents for a day and a week and what a default would keep, and returns a Go mode link that opens the owner's deposit sheet already filled in. Nothing is deposited or signed by this tool. Ask once per task, and only for what the task needs. agent_id defaults to the configured wallet's agent.",
+    description: "When the agent's Priors line is too small for a task, ask its owner for a line backed by a Robinhood stock token the owner holds: checks the token takes new lines now (price, holds, caps, the week's room, against the line the deposit opens) and the agent can take one, sizes the deposit to the line asked for at the agent's own loan-to-value (its record bonus included), with room for a 23% fall, states the cost in cents for a day and a week and what a default would keep, and returns a Go mode link that opens the owner's deposit sheet already filled in. Nothing is deposited or signed by this tool. Ask once per task, and only for what the task needs. agent_id defaults to the configured agent (PRIORS_AGENT_ID, or the one identity minted to the configured wallet); when a wallet is configured and its agent can't be told, the call fails and asks for agent_id. Without agent_id and with no wallet configured, the request is for a new agent.",
     inputSchema: {
-      agent_id: z.number().int().nonnegative().optional().describe("The agent the line is for (an ERC-8004 id); default: the configured wallet's agent, or a new agent without one."),
+      agent_id: z.number().int().nonnegative().optional().describe("The agent the line is for (an ERC-8004 id); default: PRIORS_AGENT_ID or the configured wallet's agent (an error asks for agent_id when that can't be told), or a new agent when no wallet is configured."),
       symbol: z.string().min(1).max(12).describe("The stock token's ticker, e.g. SPY (stock_assets lists them)."),
       line_usd: z.number().positive().max(1_000_000).describe("The line wanted, in USDG (lines are capped at the vault's maxLine, 500 today)."),
       reason: z.string().max(200).optional().describe("Why the agent needs it, in one sentence, for its owner."),
     },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ agent_id, symbol, line_usd, reason }) => {
-    const id = agent_id !== undefined ? agent_id : wallet ? Number(await resolveAgent().catch(() => null)) || null : null;
+    // agent_id, else the configured agent: PRIORS_AGENT_ID, or the one identity minted to the configured wallet. A wallet
+    // whose agent can't be told (several, none, the lookup failing, a key that can't be used) is a tool error that asks
+    // for agent_id: a new agent's link would have the owner fund another identity than the agent's. Only with no wallet
+    // and no PRIORS_AGENT_ID is the request for a new agent (null).
+    let id = agent_id ?? null;
+    if (agent_id === undefined) {
+      const ask = "Pass agent_id, the agent the line is for: with a wallet configured, a request without it is never taken as one for a new agent.";
+      if (env.PRIORS_AGENT_ID || wallet) {
+        try { id = Number(await resolveAgent()); } catch (e) { throw new ToolError(e instanceof ToolError ? `${e.message.replace(/ Set PRIORS_AGENT_ID or pass agent_id\.$/, "")} ${ask}` : `This wallet's agent could not be looked up just now (${explain(e)}). ${ask}`); }
+      } else if (keyProblem) throw new ToolError(`The configured wallet can't be used (${keyProblem}), so its agent can't be looked up. ${ask}`);
+    }
     const want = String(symbol).trim().toUpperCase();
     const inp = await credit.stockLineInputs(want, id);
     const r = stockLineRequest({ ...inp, lineUsd: line_usd, reason, appUrl: GO_APP_URL, asOf: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), symbol });
@@ -1622,7 +1643,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       ? `It also holds ${nf(m.balanceText)} PT-USDG of the market that matured on ${m.maturity.slice(0, 10)} (token ${m.token}): it redeems 1:1 for USDG now (pt_redeem with market ${m.market}).`
       : `It also holds ${nf(m.balanceText)} PT-USDG of an earlier market (token ${m.token}): it redeems 1:1 for USDG from ${m.maturity.slice(0, 10)}.`));
     const listingLine = (l) => (!l ? "The stock vault's listing could not be read just now."
-      : l.backsLines ? `The Priors stock vault takes PT-USDG behind an agent's line now, at up to ${l.ltvBps / 100}% of its value (all PT-USDG lines share one ${capText(l.lineCap)} cap): deposit it with the SDK's openPtLine(agentId, amount) or in Go mode's Backing tab.`
+      : l.backsLines ? `The Priors stock vault takes PT-USDG behind an agent's line now, at up to ${l.ltvBps / 100}% of its value (all PT-USDG lines share one ${capText(l.lineCap)} cap): deposit it with the SDK's openPtLine(agentId, amount) or in Go mode's Stock lines tab.`
       : l.listed ? "The Priors stock vault lists PT-USDG but takes no new line on it now (disabled, or the shared cap is used up)."
       : `The Priors stock vault does not list PT-USDG yet. Once it does, PT-USDG backs an agent's line (planned: up to ${l.planned.ltvBps / 100}% of its value, one ${capText(BigInt(l.planned.lineCap))} cap for all PT-USDG lines).`);
     const slippage = z.number().int().min(0).max(500).optional().describe("Slippage margin in basis points under the quote, 0 to 500. Default 100 (1%), 10 for a redemption.");

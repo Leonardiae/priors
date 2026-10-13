@@ -40,9 +40,23 @@ export function payerOf(paymentPayload) {
 
 const NO_RECORD = Object.freeze({ known: false, agents: [], defaulted: false, loansRepaid: 0, score: null });
 
-/** A record from the check API's answer: the best of the matched agents, defaulted if any one did. */
+const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+/** Is `a` an entry of the check API's `agents`, with what a record is built from (its id, defaulted, loansRepaid)? */
+const isAgentEntry = (a) => isObject(a) && Number.isSafeInteger(a.agentId) && a.agentId >= 0 && isObject(a.record) &&
+  typeof a.record.defaulted === "boolean" && Number.isFinite(a.record.loansRepaid) && a.record.loansRepaid >= 0 &&
+  (a.scoreV2 === undefined || a.scoreV2 === null || isObject(a.scoreV2));
+
+/**
+ * A record from the check API's answer: the best of the matched agents, defaulted if any one did. Only an answer's own
+ * `agents: []` is a payer Priors does not know; a body that is not an answer (no `agents` list, an `error`, an entry
+ * without its record) throws, so a degraded or changed service reads as an unreadable record, never as a clean one.
+ */
 export function recordFromCheck(body) {
-  const agents = Array.isArray(body?.agents) ? body.agents : [];
+  if (!isObject(body) || (body.error !== undefined && body.error !== null) || !Array.isArray(body.agents)) {
+    throw new TypeError("the Priors check API's answer has no agents list");
+  }
+  const agents = body.agents;
+  if (!agents.every(isAgentEntry)) throw new TypeError("the Priors check API's answer has an agent entry without its record");
   if (!agents.length) return { ...NO_RECORD };
   const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
   const scores = agents.map((a) => (a.scoreV2 && Number.isFinite(Number(a.scoreV2.score)) ? Number(a.scoreV2.score) : null)).filter((x) => x !== null);
@@ -91,7 +105,9 @@ export function recordGate(opts = {}) {
     u.searchParams.set("address", address);
     const r = await fetchImpl(u.href, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
     if (!r.ok) throw new Error(`the Priors check API answered HTTP ${r.status}`);
-    return recordFromCheck(await r.json());
+    let body;
+    try { body = await r.json(); } catch (_) { throw new Error(`the Priors check API answered HTTP ${r.status} with a body that is not JSON`); }
+    return recordFromCheck(body); // throws on a body that is not a check API answer: unreadable, not "no record"
   }
   // The pool marks the owner of an agent that defaulted (ownerDefaults; not a custodian, which holds others' agents),
   // and the API source counts every agent of the payer's address. So the chain source counts the mark too, for the
@@ -103,6 +119,9 @@ export function recordGate(opts = {}) {
     const named = agentId !== null && agentId !== undefined && /^\d{1,12}$/.test(String(agentId)) && (await contracts.pool.isController(BigInt(agentId), address));
     if (!named) return (await marked(address)) ? { ...NO_RECORD, known: true, defaulted: true } : { ...NO_RECORD };
     const s = await creditStatus(contracts, agentId);
+    // creditStatus gives a null owner when the registry read fails; the pool has just named one (isController reads it),
+    // so a null here is a failed read, and judging without that owner's mark would pass its agent keys
+    if (!s.owner) throw new Error(`the owner of agent #${agentId} could not be read from the registry`);
     const defaulted = s.defaulted || (await marked(address)) || (await marked(s.owner));
     return { known: s.enrolled || defaulted, agents: [Number(agentId)], defaulted, loansRepaid: Number(s.loansRepaid), score: s.score };
   }

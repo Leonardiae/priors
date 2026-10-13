@@ -99,7 +99,8 @@ caches it) and judges it with the same policy as `recordGate`:
   `priors_record_too_short`, `priors_score_too_low`; `priors_payer_unknown` for a header that names no single payer).
   The paywall never sees the payment, so it is never verified or settled: no money moves;
 - **a record that cannot be read**: `503` with `Retry-After`, the same JSON with `priors_record_unavailable`. It fails
-  closed; `failOpen: true` serves instead.
+  closed; `failOpen: true` serves instead. That includes an HTTP 200 from the record service that is not a record
+  answer (no `agents` list, an `error`); only an answer's own `agents: []` is a payer Priors does not know (0.7.1).
 
 Express (and Connect, or a bare `node:http` server: `check(req, res, next)`):
 
@@ -178,7 +179,8 @@ recordGate({ refuseDefaulted: true, minRepaid: 1 }).attach(server); // then paym
 | `cacheMax` | `10000` | (0.6.4) at most this many records kept; then the expired ones go, then the oldest. With `source: "api"` the record is keyed by the payer only, so `X-Priors-Agent` adds no entry |
 | `onDecision` | none | called with `{ payer, record, ok, reason }` for each payment |
 
-A record that cannot be read refuses rather than serves on a guess.
+A record that cannot be read refuses rather than serves on a guess: the check API down, or answering HTTP 200 without a
+record list (0.7.1); with `source: "chain"`, a failed read of the pool or of the named agent's owner.
 
 **Prices by record.** Give the route `price: gate.tierPrice()`. A client states its address in `X-Payer` (and its
 agent in `X-Priors-Agent` with `source: "chain"`) to be quoted its tier. That statement is only a request: when the

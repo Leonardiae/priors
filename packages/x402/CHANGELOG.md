@@ -1,5 +1,19 @@
 # @priors/x402 changelog
 
+## 0.7.1 (2026-10-13)
+
+- **Fix: a check API answer with no record in it no longer passes a payer.** With the API source, an HTTP 200 whose
+  body was not a check API answer (`{}`, `{"error": …}`, `{"agents": null}`, `{"agents": {}}`, an entry without its
+  `record`) read as a payer Priors does not know: an empty, non-defaulted record, which the default policy accepts. A
+  degraded or changed record service would then have served a defaulted payer through `@priors/x402/check`, failing
+  closed or not, and through `recordGate`. Such a body is now a record that cannot be read: `@priors/x402/check`
+  answers `503` with `Retry-After` (or serves, with `failOpen: true`), and `recordGate` refuses the payment
+  (`priors_record_unavailable`). Only an answer's own `agents: []` is a payer Priors does not know, as before.
+  `recordFromCheck` throws on such a body instead of returning an empty record.
+- Fix, chain source: when the registry read of the named agent's owner fails, the record is unreadable (refused, or
+  `503` from `@priors/x402/check`). It was judged without that owner's default mark, so an agent key of a marked
+  owner's agent could pass `refuseDefaulted`.
+
 ## 0.7.0 (2026-10-12)
 
 - **`@priors/x402/check`: refuse a payer with a bad Priors record in one line, whatever runs the x402 paywall.**

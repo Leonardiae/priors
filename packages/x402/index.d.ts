@@ -300,6 +300,8 @@ export interface RecordGate {
 export declare function recordGate(opts?: RecordGateOptions): RecordGate;
 /** The address that signed an x402 v2 EVM payment (EIP-3009 or Permit2), or null. */
 export declare function payerOf(paymentPayload: any): string | null;
+/** The record in a check API answer. Throws on a body that is not one (no `agents` list, an `error`, an entry without
+ *  its `record`; 0.7.1); only `agents: []` is a payer Priors does not know. */
 export declare function recordFromCheck(body: any): PriorsRecord;
 export declare function judge(record: PriorsRecord, policy?: { refuseDefaulted?: boolean; minRepaid?: number; minScore?: number | null }): { ok: boolean; reason?: string; message?: string };
 export declare function priceFor(record: PriorsRecord, base: string, tiers?: Array<{ minRepaid: number; price: string }>): string;

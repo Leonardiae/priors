@@ -1,5 +1,27 @@
 # @priors/mcp changelog
 
+## 0.9.1 (2026-10-13)
+
+- **`stock_line_request` checks the caps against the line the deposit opens.** The deposit is the line's need × 1.3,
+  so the vault opens about 1.3 times the line asked for (at most its largest line); the token's cap and the week's room
+  were checked against the line asked for, so a 100 USDG request with 110 USDG of room returned a link to a deposit that
+  opens 130 USDG, which the vault refuses. The request is now refused when the line the filled deposit opens is over
+  either, and the answer names the largest line that fits with the same room for a 23% fall.
+- **`stock_line_request` sizes a named agent at its own loan-to-value**: the vault's `ltvOf(agent, token)`, the token's
+  own plus the agent's record bonus, which is what the vault opens its line at. It sized at the token's own, so an agent
+  with a bonus was asked for more of the token than its line needs (about 25% more at 75% against 60%). The answer says
+  the bonus; when that figure cannot be read, the request is refused rather than sized at the token's own.
+- **`stock_line_request` without `agent_id` no longer turns a failed lookup into a new agent's link.** With a wallet
+  configured, a wallet that owns several agent identities, or none, a lookup that failed, or a key that can't be used
+  now gives a tool error that asks for `agent_id`; before, the link opened the new-agent deposit, where the owner could
+  fund another identity than the agent's. `PRIORS_AGENT_ID` is used when set. Only with no wallet configured (and no
+  `PRIORS_AGENT_ID`) is a request without `agent_id` for a new agent.
+- `stock_line_request` refuses an agent whose owner has a default marked on their account (the pool's `ownerDefaults`,
+  which `StockVault.open` refuses for every agent of that owner), instead of a link to a sheet that can open nothing.
+- `stock_line_request` names the tab as Go mode shows it (Stock lines, not Backing), and says the pool's grace as it is,
+  never rounded up (a 36 h grace reads 1.5 days). `pt_position` names it the same where the vault takes PT-USDG
+  behind a line ("Go mode's Stock lines tab").
+
 ## 0.9.0 (2026-10-12)
 
 - **`stock_line_request`**: when the agent's line is too small for a task, it asks its owner for a line backed by a
