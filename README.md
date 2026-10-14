@@ -431,7 +431,10 @@ Leaving inside 7 days now leaves 0.5% behind, which stays in the pool for the le
 That is enough to make a zero-duration position lose money: the borrower's sandwich costs $549.54 against
 the $505.00 it owed. It is a **constant in the contract, not a parameter**, in v1 and v2 alike — an
 owner-tunable exit fee would be a lever to confiscate deposits, and the owner cannot reach lender principal
-here. Hold past 7 days and it is zero.
+here. Hold past 7 days and it is zero. The 7 days run on one clock per wallet, weighted by shares, so money added to
+a wallet whose older shares are well past their 7 days can leave sooner without the fee (up to H·(age − 7 d)/7 d for H
+of shares aged `age`), and a root's stake never pays it: either way a position held only across one repayment or
+default takes a share of that one event's fee, the bound `docs/SECURITY-v2.md` states (F-2, SO-2, O-6).
 
 `RPC_URL` accepts a comma-separated list and tries it in order — the first entry first, the next only
 when that one fails or refuses to serve the request:
