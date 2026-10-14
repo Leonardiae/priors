@@ -71,6 +71,7 @@ npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer i
 npx priors-v2 borrow 5 --days 7
 npx priors-v2 repay --all
 npx priors-v2 status
+npx priors-v2 tx                         # whether each recorded transaction is final, and whether it ran
 ```
 
 Run the `npx` commands inside the clone: there they run this repository's own CLI. Outside it, `npx priors` is an
@@ -91,7 +92,62 @@ else.
   needs `PRIORS_AGENT_ID`. `repay` pays only loans the agent's owner now took (GHSA-mmp8).
 - **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
   vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
-- **Exit codes**: 0 done, 1 failed, 2 usage or configuration, 3 waiting on someone else (no seat offer yet).
+- **Exit codes**: 0 done (also when only the status shown after a write that went through could not be read; for `tx`:
+  every recorded transaction final, or forgotten), 1 failed: the step that failed did nothing (refused before sending,
+  reverted, or cancelled; a revert or cancel that mined stays recorded until `tx` shows it final; a node's refusal,
+  "insufficient funds", counts only once the node shows no trace of the transaction); 2 usage or configuration (also
+  an untrusted record); 3 waiting (no seat offer yet; for `tx`: a recorded transaction not final yet; `borrow` or
+  `join` refused while one is unresolved; another command of this key running); 4 a transaction was sent and its
+  answer was lost (also a 429, a redirect or any other failed request: the broadcast is one request to one endpoint,
+  never retried, redirected or sent to another node; also a reply that is not exactly one JSON-RPC answer to it, or no
+  conclusive answer within the wait bound, `PRIORS_WAIT_SECONDS`), or it mined and its result could not be read, or
+  the node answered anything but a refusal ("nonce too low", "replacement transaction underpriced", "already
+  known"...) and does not show it (each can mean the transaction itself was taken) (GHSA-g5cv).
+- **Every write is recorded before it is sent**, one file per transaction (hash, nonce, the block before it was sent,
+  the signed bytes) in `~/.local/state/priors/unconfirmed/` (`$XDG_STATE_HOME/priors/unconfirmed` if set; directory
+  0700, files 0600, synced to disk, opened without following links, refused if anyone else can write them), so a
+  command killed at any point leaves it behind: first as signed but not sent (before the lock check below), then as
+  sending (right before its one broadcast). `tx` never sends one that was not sent, and drops it once the command that
+  signed it has stopped (or another command holds the lock). A record is kept, and `borrow` and `join` refused, while
+  its outcome is unknown or `tx`'s verdict on it is not finalized yet (a mined revert or a cancel included); a success
+  answered to the command itself (its receipt read) clears it at once, as does the node refusing the transaction.
+  `join`, `borrow`, `repay` and `tx` hold a lock per key (`<address>.lock` there): a second command of the same key
+  exits 3 while the first runs, and a lock left by a killed command is recovered (an owner is its pid and its
+  process's start time, so a pid reused by another process does not keep a lock, an unsent record or a claim alive).
+  Each write, once recorded, checks right before its broadcast that the lock is still its own; if not (two commands
+  can both take a lock while a stale one is recovered), it sends nothing, removes its unsent record and exits 3. A
+  sending record decides its own fate: whoever settles or resends it first claims it by renaming it (a resend holds it
+  as `<address>-<hash>.resending-…`, still sending to everyone else, also after a crash), and the other then sends
+  nothing and deletes nothing (exit 4).
+- **After exit 4** (or a killed command) the transaction may have landed or may still be pending, so `status` alone
+  settles nothing: a pending borrow shows no loan yet. While a record is unresolved, `borrow` and `join` refuse (exit
+  3); `repay` still runs (it cannot pay a loan twice, and a refused repay could miss a due date). `npx priors-v2 tx`
+  (no argument: a 64-hex argument is always refused as a key) settles every record of the key and removes each once
+  final:
+  - mined: its receipt says status 1 (it ran, "Success" on `https://robinhoodchain.blockscout.com/tx/<hash>`), or the
+    transaction at its nonce is a copy of the same call (same sender, target, data, value and chain) at another fee, a
+    speed-up, whose receipt says status 1: it ran, never "safe to run again";
+  - reverted: that receipt says status 0 ("Failed"): it did nothing;
+  - replaced: a different call is found at its nonce: this one can never run.
+
+  Each is final only once the deciding block is at or below the chain's finalized block and still the canonical
+  block at its height; until then `tx` shows the verdict with "waiting for finality" (exit 3) and keeps the record.
+  Not final either: a hash this node does not know (another node's mempool may hold it, or it may still arrive), a
+  mined one whose receipt is not readable yet, or a used nonce this node cannot attribute. The public node keeps about
+  five minutes of state, less than the time to finality, so `tx` keeps what it saw (the block where the nonce's
+  transaction was found, or a block at which the nonce was already used) next to the record and re-reads that block
+  later. When the node no longer serves the history to find the transaction, `tx` asks the explorer
+  (`PRIORS_EXPLORER_API`, default Blockscout's Etherscan-compatible API) for the sender's transactions, as a pointer
+  only: each hash it names is checked on the RPC (sender, nonce, receipt, canonical and finalized block, same call or
+  not), and one the RPC does not confirm settles nothing. Failing that, `npx priors-v2 tx --forget` drops a record
+  whose nonce is used in finalized history (counted at the finalized block, or seen used at a block now finalized),
+  after printing the agent's open loans and the explorer links: whether it ran is then not known, so check them
+  before running the command again. It refuses while the nonce is free. To settle an unknown hash,
+  `npx priors-v2 tx --resend` sends the very same signed transaction again (same hash and nonce: it cannot make a
+  second one), or cancel its nonce from a wallet (a 0-value transfer to yourself at that nonce, at a higher fee) and
+  wait for that nonce to be mined. Run the command again only once it is final and did not run. A second `repay` of
+  the same loan cannot pay twice (the pool refuses a loan no longer open, so it reverts); a second `join` while a
+  register is pending registers a second identity.
 
 ⛔ **Repay before the due date.** Three days past due, anyone can mark the loan defaulted: the record is
 permanently marked, the owner address is marked (`ownerDefaults`), and the sponsor pays for it: its stake, half the
@@ -132,6 +188,18 @@ Amounts are USDG as a number or decimal string (`5`, `"12.5"`), or atomic 6-deci
 Every write is simulated first, so a revert is explained with the contract's own custom error before any gas is
 spent. Approvals are for the exact amount. `borrow` passes the pool's own quote as `maxFee`, and `repay` binds the
 loan's agent and amount, so a changed premium or a wrong loan id reverts instead of costing more.
+A write signed by a key held in the process is sent once. A node's refusal ("insufficient funds") is recognised only
+over plain JSON-RPC over HTTP(S) on ethers' own transport (no custom `getUrlFunc`, preflight or process function),
+where the SDK sends the one request itself with the global `fetch` it found when it loaded (no retry, no redirect
+followed, no other node), and only from exactly one JSON-RPC 2.0 reply to that request (its id; a result must be the
+transaction's own hash); through a WebSocket, browser or custom provider, a custom transport, or a `fetch` replaced
+after the SDK loaded, any send error leaves the write unconfirmed (`TX_UNCONFIRMED` / `BORROW_UNCONFIRMED`, with its
+hash), never refused. A proxy or `getUrl` registered globally before the SDK is imported is not used for that one
+request (it fails safe: an error there leaves the write unconfirmed); a per-provider transport is respected. From its
+broadcast to its conclusive answer (the hash lookups, the receipt and replacement wait, reading its result) a write
+takes at most `waitTimeoutMs`, a wall-clock bound (default 3 minutes; the CLI's `PRIORS_WAIT_SECONDS`): past it, it is
+unconfirmed, its record kept. Out of reach by design: user code that replaces globals with a lying implementation, and
+an RPC node that lies about what it took.
 
 **A line sponsored by SeatVaultV5.** V5 vouches nothing when it opens a line: it raises the pool's vouch only on
 `refresh(agentId)` from the agent's owner, or from the pool delegate V5 recorded (`noteDelegate(agentId)`, which

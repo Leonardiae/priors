@@ -24,7 +24,14 @@
 //
 // Amounts: a number or a decimal string is whole USDG ("5", 5.5); a bigint is raw 6-decimal units. Every write
 // simulates first (a revert is explained with the contracts' own custom errors, before any gas is spent) and
-// approves the exact USDG or $PRIORS it needs when the allowance is short.
+// approves the exact USDG or $PRIORS it needs when the allowance is short. A write signed by a key held here is sent
+// once; a refusal ("insufficient funds") is recognised only over plain JSON-RPC over HTTP(S) on ethers' own transport,
+// where it is exactly one request sent here (no retry, no redirect followed) and its reply exactly one JSON-RPC 2.0
+// answer to it: through a WebSocket, browser or custom provider, or a custom transport, or once the global fetch was
+// replaced after this module loaded, any send error leaves it unconfirmed (TX_UNCONFIRMED / BORROW_UNCONFIRMED, see
+// sendChecked). A proxy or getUrl registered globally before this module loads is not used for that one request (an
+// error there leaves it unconfirmed); a per-provider transport is respected. Out of reach by design: user code that
+// replaces globals with a lying implementation, and an RPC node that lies about what it took.
 //
 // EXTENSION POINT: x402 `pay()` / `settleLoans()` live in sdk/float.mjs, not here. That module adds them with
 // `extendPriorsV2({ pay, settleLoans })` (below), which refuses to overwrite a method this file defines. Everything
@@ -219,12 +226,160 @@ export const fmtPriors = (units) => ethers.formatUnits(units, 18);
 // Sending
 // ---------------------------------------------------------------------------------------------------------------
 
+/** What a wallet or a node answers when it does not take a transaction: it was refused, nothing was sent. */
+const REFUSED = new Set(["ACTION_REJECTED", "INSUFFICIENT_FUNDS", "NONCE_EXPIRED", "REPLACEMENT_UNDERPRICED", "CALL_EXCEPTION"]);
+
+/** For bytes signed here, the node's answers that can be a refusal: only once our own hash is shown to be unknown. */
+const SIGNED_REFUSALS = new Set(["INSUFFICIENT_FUNDS", "CALL_EXCEPTION"]);
+
+// ethers' own transport as this module found it when it loaded: Node's http(s) in Node, fetch in a browser build (or
+// whatever was registered globally before this module loaded). A request given another one (its own getUrlFunc, a
+// preflight or a process function) goes through a transport this code does not control.
+const ETHERS_GET_URL = new ethers.FetchRequest("http://localhost/").getUrlFunc;
+// the global fetch as this module found it when it loaded: the one broadcast is sent with it, and only while it is
+// still the global one (a fetch replaced since is a transport this code does not control)
+const FETCH_AT_LOAD = typeof globalThis.fetch === "function" ? globalThis.fetch : null;
+
+/**
+ * The JSON-RPC-over-HTTP(S) endpoint behind `p` (itself, or a fallback or failover provider's first entry) when this
+ * code can send to it itself: ethers' own transport, no custom getUrlFunc, preflight or process function, and the
+ * global fetch still the one found at load. null otherwise: such a provider is sent through as it is, and none of its
+ * errors is taken as a refusal. A proxy or getUrl registered globally before this module loaded is not used for that
+ * one request (it fails safe: an error there leaves the transaction unconfirmed); a per-provider transport is
+ * respected.
+ */
+function ownEndpoint(p) {
+  const ep = typeof p?._getConnection === "function" ? p : p?.providerConfigs?.[0]?.provider;
+  if (!ep || typeof ep._getConnection !== "function" || typeof ep.getRpcError !== "function") return null;
+  if (!FETCH_AT_LOAD || globalThis.fetch !== FETCH_AT_LOAD) return null;
+  const conn = ep._getConnection();
+  if (!/^https?:/i.test(String(conn.url))) return null;
+  if (conn.getUrlFunc !== ETHERS_GET_URL || conn.preflightFunc || conn.processFunc) return null;
+  return { ep, conn };
+}
+
+/**
+ * ONE eth_sendRawTransaction as exactly one HTTP request, sent here with fetch and `redirect: "manual"`, to the
+ * provider's URL with its headers (including the Basic authorization ethers derives from its credentials, and any
+ * user:password in the URL, sent as that header). ethers' own FetchRequest would send it again: after a 429 (its
+ * throttle), and after a 301/302/307/308 (redirect() builds a new request with the default throttle, ethers 6.17
+ * utils/fetch.js 460-464 and 526-551), and its browser transport lets fetch follow a redirect inside one call
+ * (utils/geturl-browser.js). Any 3xx, an opaque redirect (a browser's status 0), a 429, any other non-2xx, a body that
+ * is not exactly one JSON-RPC 2.0 reply to this request (its id; exactly one of error and result; a result that is
+ * this transaction's hash), a transport failure or a timeout throws as it is (never a refusal); a 2xx JSON-RPC error
+ * reply throws the provider's mapped error marked `answered`. A redirect is also any response that says it was
+ * redirected or comes from another URL (a fetch that ignores "manual").
+ */
+async function postOnce({ ep, conn }, raw) {
+  const fail = (why) => ethers.makeError(`the broadcast request ${why}`, "SERVER_ERROR");
+  const id = 1 + Math.floor(Math.random() * 2 ** 30);
+  const payload = { method: "eth_sendRawTransaction", params: [raw], id, jsonrpc: "2.0" };
+  const hash = ethers.Transaction.from(raw).hash.toLowerCase();
+  const url = new URL(conn.url);
+  const headers = new Headers();
+  for (const [k, v] of conn) if (!["content-length", "accept-encoding"].includes(k.toLowerCase())) headers.set(k, v);
+  if (url.username || url.password) {
+    if (!headers.has("authorization")) headers.set("authorization", `Basic ${ethers.encodeBase64(ethers.toUtf8Bytes(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`))}`);
+    url.username = "";
+    url.password = "";
+  }
+  headers.set("content-type", "application/json");
+  let res;
+  try {
+    res = await FETCH_AT_LOAD(url, { method: "POST", headers, body: JSON.stringify(payload), redirect: "manual", signal: AbortSignal.timeout(conn.timeout || 300_000) });
+  } catch (e) {
+    throw Object.assign(fail(`failed (${e?.cause?.message || e?.message || e})`), { cause: e });
+  }
+  // a redirect, followed or not, by this fetch or by one that ignores "manual": never an answer to this request
+  let sameUrl = false;
+  try { sameUrl = new URL(String(res.url)).href === url.href; } catch (_) { /* no URL: not the same */ }
+  if (res.type === "opaqueredirect" || res.status === 0 || res.redirected === true || (res.status >= 300 && res.status < 400) || !sameUrl) {
+    throw fail(`was redirected (${res.status || res.type}${res.redirected ? ", followed" : ""}), so its answer is not taken`);
+  }
+  if (!res.ok) throw fail(`was answered with HTTP ${res.status}`);
+  // exactly one JSON-RPC 2.0 reply to this request: its id, and exactly one of error and result
+  let body;
+  try {
+    body = JSON.parse(await res.text());
+  } catch (_) {
+    throw fail("was answered with something other than JSON");
+  }
+  const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  if (!isObj(body) || body.jsonrpc !== "2.0" || body.id !== id || ("error" in body) === ("result" in body)) {
+    throw fail("was answered with something other than one JSON-RPC 2.0 reply to it");
+  }
+  if ("error" in body) {
+    if (!isObj(body.error) || typeof body.error.message !== "string" || typeof body.error.code !== "number") throw fail("was answered with a malformed JSON-RPC error");
+    throw Object.assign(ep.getRpcError(payload, body), { answered: true });
+  }
+  if (typeof body.result !== "string" || body.result.toLowerCase() !== hash) throw fail(`was answered with ${JSON.stringify(body.result)}, not this transaction's hash`);
+  return body.result;
+}
+
+/**
+ * Send signed bytes once, as sendChecked does (and the CLI's `tx --resend`): to a JSON-RPC-over-HTTP(S) endpoint this
+ * code can send to itself, exactly one request (postOnce); through any other provider (a WebSocket, a browser's, a
+ * custom one, or one with its own transport), its own broadcastTransaction, which sends it once as far as this code can
+ * tell. Resolves with the hash. A refusal can be recognised only from the first kind (an error marked `answered`);
+ * from the second, any error leaves it unconfirmed.
+ */
+export async function sendRawOnce(provider, raw) {
+  const own = ownEndpoint(provider);
+  return own ? postOnce(own, raw) : (await provider.broadcastTransaction(raw)).hash;
+}
+
+/** TX_UNCONFIRMED: `name` may have landed or may still be pending (`mined`: it landed), and what it did is not known.
+ *  It carries the tx `hash` and the `nonce` it was signed with, which `txStatus` takes to tell when it is final, and,
+ *  signed here, the exact signed transaction (`raw`): sending those same bytes again cannot make a second one. */
+function unconfirmed(name, hash, cause, mined = false, nonce = null, raw = null, sentBlock = null) {
+  const why = cause?.shortMessage || cause?.message || String(cause);
+  const msg = mined
+    ? `${name} was mined (tx ${hash}) but its result could not be read (${why}): it landed, so do not send it again`
+    : `${name} was sent${hash ? ` (tx ${hash}, nonce ${nonce})` : ""} and its answer was lost (${why}): it may have landed, or may still be pending. Do not send it again until it is final (mined, reverted, or replaced: txStatus)`;
+  return Object.assign(new Error(msg), { code: "TX_UNCONFIRMED", unconfirmed: true, mined, hash, nonce, raw, sentBlock, cause });
+}
+
+/** A key held in this process (an ethers Wallet): it signs here, so the hash is known before anything is sent. */
+const signsHere = (runner) => typeof runner?.signTransaction === "function" && runner.signingKey != null && runner.provider != null;
+
 /**
  * Simulate, then send with 25% gas headroom (same reasons as sdk/priors.mjs: a doomed transaction returns its
- * reason only before the send, and a bare estimate can undershoot a branch taken at mining time).
+ * reason only before the send, and a bare estimate can undershoot a branch taken at mining time). Then, so that an
+ * error says what happened and never invites a second send of a write that landed (P-18's rule; GHSA-g5cv-cpwp-756w):
+ *  1. build: nonce, gas and fees are read and, with a key held here, the transaction is signed, so its hash is known
+ *     before it is sent. A failure here sent nothing: an ordinary error.
+ *  2. send: bytes signed here go out once (sendRawOnce): to a JSON-RPC-over-HTTP(S) endpoint on ethers' own transport,
+ *     exactly one request, sent here with fetch, no retry, no redirect followed. Any answer from the node is first
+ *     reconciled with our own hash: its receipt is read and used as below, or the node holds it and it is waited for.
+ *     Only an unknown hash with a refusal in a 2xx JSON-RPC answer (INSUFFICIENT_FUNDS, or a revert reported at the
+ *     broadcast: CALL_EXCEPTION) is an ordinary error; any other answer ("nonce too low", "replacement underpriced",
+ *     "already known"...), a lookup that fails, and any 3xx, 429, other HTTP status, transport failure or timeout are
+ *     TX_UNCONFIRMED. Through any other provider (WebSocket, browser, custom, or a custom transport on a JSON-RPC
+ *     provider) no refusal is recognised: any error is reconciled the same way, else TX_UNCONFIRMED. A wallet that
+ *     signs and sends itself: its refusals (ACTION_REJECTED, INSUFFICIENT_FUNDS, NONCE_EXPIRED,
+ *     REPLACEMENT_UNDERPRICED, CALL_EXCEPTION) sent nothing; any other failure is TX_UNCONFIRMED.
+ *  3. wait (one wall-clock deadline, PriorsV2's waitTimeoutMs, over the broadcast, the lookups, the wait and reading
+ *     the result: no conclusive answer by then is TX_UNCONFIRMED): a revert mined with status 0
+ *     (CALL_EXCEPTION, from the receipt) did nothing: an ordinary error. A
+ *     replacement is read from its receipt: repriced (this same call at another fee) is this call's result; cancelled,
+ *     or replaced by another call, is TRANSACTION_REPLACED with `cancelled: true` (this call did not run). Any other
+ *     failure: TX_UNCONFIRMED with the hash.
+ * `then(rc)` reads the result from the status-1 receipt (an event, a read after the write): anything it throws is
+ * TX_UNCONFIRMED with `mined: true`, since the write landed. `borrow` names both BORROW_UNCONFIRMED.
+ * With a `journal` (PriorsV2's option) and a key held here, the signed transaction is handed to `journal.before` and
+ * recorded before the broadcast (if `before` throws, nothing is sent, and its error's code is kept: a record that
+ * cannot be written, or the CLI's lock no longer held, LOCK_LOST), so a process killed at any later point leaves it
+ * behind; `journal.settled(hash, { refusal })` is called only on a conclusive answer: a refusal at the broadcast
+ * (`refusal: true`; a journal that answers false keeps the record, and the transaction is then TX_UNCONFIRMED), or the
+ * status-1 receipt with its result read. A mined revert, a cancel, a lost answer and an ambiguous answer keep it.
  */
-async function sendChecked(contract, method, args, ifaces) {
+async function sendChecked(contract, method, args, ifaces, then = (rc) => rc) {
   const fn = contract.getFunction(method);
+  const name = method.split("(")[0];
+  const runner = contract.runner;
+  const journal = ifaces.journal || null;
+  const waitMs = ifaces.waitTimeoutMs ?? 180_000;
+  if (typeof runner?.sendTransaction !== "function") throw ethers.makeError(`${name}: this call needs a signer`, "UNSUPPORTED_OPERATION", { operation: "sendTransaction" });
   try {
     await fn.staticCall(...args);
   } catch (err) {
@@ -238,10 +393,179 @@ async function sendChecked(contract, method, args, ifaces) {
     const est = await fn.estimateGas(...args);
     overrides = { gasLimit: est + est / 4n };
   } catch (_) { /* let ethers estimate on its own */ }
-  const tx = await fn(...args, overrides);
-  const rc = await tx.wait();
-  if (!rc || rc.status !== 1) throw new Error(`${method.split("(")[0]} mined with status 0 (tx ${tx.hash})`);
-  return rc;
+  // 1. build (and sign, with a key held here): nothing is sent yet
+  const pop = await runner.populateTransaction(await fn.populateTransaction(...args, overrides));
+  const nonce = pop.nonce == null ? null : Number(pop.nonce);
+  // the block before it is sent: it cannot be mined at or before it, which bounds the search for its nonce (txStatus)
+  const sentBlock = await runner.provider.getBlockNumber();
+  let signed = null, hash = null;
+  if (signsHere(runner)) {
+    delete pop.from;
+    signed = await runner.signTransaction(ethers.Transaction.from(pop));
+    hash = ethers.Transaction.from(signed).hash;
+  }
+  // the one broadcast, prepared before anything is recorded (nothing after the send may fail but the send itself)
+  const own = signed ? ownEndpoint(runner.provider) : null;
+  const network = signed ? await runner.provider.getNetwork() : null;
+  if (journal && signed) {
+    try {
+      await journal.before({ name, hash, nonce, raw: signed, sentBlock });
+    } catch (e) {
+      throw Object.assign(new Error(`${name} was not sent: ${e.message}`), { code: e.code, cause: e });
+    }
+  }
+  // the record goes only on a conclusive answer; if removing it fails, or the journal keeps it (another process claimed
+  // it first, or, for a refusal, the CLI's lock is no longer this command's), it stays, and `tx` settles it
+  const settled = async (refusal = false) => {
+    if (!journal || !hash) return true;
+    try { return (await journal.settled(hash, { refusal })) !== false; } catch (_) { return false; }
+  };
+  // 2. send. Broadcast here rather than through the contract: ethers' contract response forgets the block it was sent
+  //    at, and its wait() then never looks for a replacement (a replaced transaction was waited for forever).
+  // One wall-clock deadline (waitTimeoutMs) over everything from the broadcast of bytes signed here (or, for a wallet
+  // that sends itself, from its answer) to the conclusive answer: the broadcast, the hash lookups, the receipt and
+  // replacement wait (ethers arms its own timeout only after its first lookup), and reading the result. A request
+  // that never settles is raced, not awaited: at the deadline the write is TX_UNCONFIRMED, its record kept; the losing
+  // request is ignored, and the timer is cleared on every path, so nothing holds the process open.
+  let deadline = Date.now() + waitMs;
+  const bounded = (promise, what) => {
+    let timer;
+    const left = Math.max(0, deadline - Date.now());
+    const late = new Promise((_, no) => { timer = setTimeout(() => no(ethers.makeError(`${name}: ${what} gave no answer within ${waitMs} ms`, "TIMEOUT")), left); });
+    return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+  };
+  let tx = null, rc = null;
+  try {
+    if (signed && own) {
+      await bounded(postOnce(own, signed), "the broadcast");
+      tx = runner.provider._wrapTransactionResponse(ethers.Transaction.from(signed), network).replaceableTransaction(sentBlock);
+    } else if (signed) {
+      tx = await bounded(runner.provider.broadcastTransaction(signed), "the broadcast"); // not a transport we control: any error is unconfirmed
+    } else {
+      tx = await runner.sendTransaction(pop); // a wallet's own send (its user may take their time): not bounded
+      deadline = Date.now() + waitMs;
+    }
+  } catch (e) {
+    if (signed && (e?.answered || !own)) {
+      // the node answered (or a provider we cannot make send once failed): our own hash decides first
+      let onNode = null, looked = false;
+      try {
+        rc = await bounded(runner.provider.getTransactionReceipt(hash), "the receipt lookup");
+        if (!rc) onNode = await bounded(runner.provider.getTransaction(hash), "the transaction lookup");
+        looked = true;
+      } catch (_) { // a lookup that fails or never answers: nothing is known, so never a refusal
+        rc = null;
+        onNode = null;
+      }
+      if (!rc && onNode) tx = onNode.replaceableTransaction(sentBlock);
+      else if (!rc) {
+        // unknown to the node: a refusal only for a refusing 2xx answer to our own request, once its record is claimed
+        if (own && e?.answered && looked && SIGNED_REFUSALS.has(e.code) && (await settled(true))) throw e;
+        throw unconfirmed(name, hash, e, false, nonce, signed, sentBlock);
+      }
+    } else if (!signed && REFUSED.has(e?.code)) {
+      throw e;
+    } else {
+      throw unconfirmed(name, hash, e, false, nonce, signed, sentBlock);
+    }
+  }
+  // 3. wait
+  if (!rc) {
+    try {
+      rc = await bounded(tx.wait(1, Math.max(1, deadline - Date.now())), "the receipt"); // no receipt by then: TX_UNCONFIRMED
+    } catch (e) {
+      if (e?.code === "CALL_EXCEPTION") throw e;
+      if (e?.code !== "TRANSACTION_REPLACED") throw unconfirmed(name, tx.hash, e, false, tx.nonce ?? nonce, signed, sentBlock);
+      if (e.cancelled) {
+        throw Object.assign(new Error(`${name} (tx ${tx.hash}) was ${e.reason} by tx ${e.hash}, which mined with its nonce: it did not run`),
+          { code: "TRANSACTION_REPLACED", cancelled: true, reason: e.reason, hash: tx.hash, replacement: e.hash, cause: e });
+      }
+      rc = e.receipt; // repriced: this same call, mined under the replacement's hash
+    }
+  }
+  if (!rc || rc.status !== 1) throw Object.assign(new Error(`${name} mined with status 0 (tx ${rc?.hash ?? tx?.hash ?? hash}): it did nothing`), { code: "CALL_EXCEPTION", receipt: rc });
+  let out;
+  try {
+    out = await bounded(Promise.resolve().then(() => then(rc)), "reading its result");
+  } catch (e) {
+    throw unconfirmed(name, rc.hash, e, true, tx?.nonce ?? nonce, signed, sentBlock);
+  }
+  await settled();
+  return out;
+}
+
+const sameAddr = (x, y) => (x == null ? null : String(x).toLowerCase()) === (y == null ? null : String(y).toLowerCase());
+
+/** The same call: sender, target, calldata, value and chain. A fee-bumped copy (a speed-up) differs only in its fee
+ *  fields and so its hash: it does what the original would have done. */
+const sameCall = (a, b) => sameAddr(a.from, b.from) && sameAddr(a.to, b.to) && String(a.data).toLowerCase() === String(b.data).toLowerCase() && BigInt(a.value ?? 0) === BigInt(b.value ?? 0) && BigInt(a.chainId ?? 0) === BigInt(b.chainId ?? 0);
+
+/** `who`'s transaction at nonce `n` in block `num`'s body ({ tx, block, blockHash }), or null if the body has none. */
+async function inBlock(p, num, who, n) {
+  const block = await p.getBlock(num, true);
+  if (!block) throw new Error(`block ${num} is not available`);
+  const t = block.prefetchedTransactions.find((x) => sameAddr(x.from, who) && x.nonce === n);
+  return t ? { tx: t, block: num, blockHash: block.hash } : null;
+}
+
+/**
+ * Whether block `num` (as a receipt or a transaction named it, with `blockHash`) is final: "finalized" once it is at
+ * or below the chain's finalized block and its hash is the canonical one at that number; "waiting" while it is above;
+ * "reorged" when the canonical block at that number has another hash; "unknown" when either cannot be read. The
+ * finalized block is read first, so a canonical hash read after it, at or below it, is the finalized chain's.
+ */
+async function finalityOf(p, num, blockHash) {
+  try {
+    const fin = await p.getBlock("finalized");
+    const canon = await p.getBlock(num);
+    if (!fin || !canon || !blockHash) return "unknown";
+    if (String(canon.hash).toLowerCase() !== String(blockHash).toLowerCase()) return "reorged";
+    return num <= fin.number ? "finalized" : "waiting";
+  } catch (_) {
+    return "unknown";
+  }
+}
+
+/**
+ * The explorer as a pointer only: `lookup({ from, nonce, sentBlock })` names candidate hashes; each is checked on the
+ * RPC (this sender, this nonce, mined, its receipt in the same block) and only a checked one is returned. An explorer
+ * that lies or fails yields nothing.
+ */
+async function viaExplorer(p, lookup, who, n, sentBlock) {
+  const hashes = [].concat((await lookup({ from: who, nonce: n, sentBlock })) || []);
+  for (const h of hashes.slice(0, 10)) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(h))) continue;
+    const t = await p.getTransaction(h);
+    if (!t || !sameAddr(t.from, who) || t.nonce !== n || t.blockNumber == null) continue;
+    const r = await p.getTransactionReceipt(h);
+    if (!r || r.blockNumber !== t.blockNumber || !sameAddr(r.blockHash, t.blockHash)) continue;
+    return { tx: t, block: t.blockNumber, blockHash: t.blockHash };
+  }
+  return null;
+}
+
+/**
+ * The transaction that used `who`'s nonce `n`, given that the count at block `B` has passed it: the block K where the
+ * count goes from n to n + 1 (searched back from B, doubling, then halving, never below `floor`, the block it was sent
+ * after), then the sender's transaction at nonce n in K ({ tx, block, blockHash }). null when that cannot be shown;
+ * throws when a read fails.
+ */
+async function nonceUser(p, who, n, B, floor) {
+  const low = Math.max(0, floor == null ? 0 : Number(floor));
+  const count = (b) => p.getTransactionCount(who, b);
+  let hi = B, lo = null;
+  for (let step = 1; lo === null; step *= 2) {
+    const probe = Math.max(low, hi - step);
+    if ((await count(probe)) <= n) lo = probe;
+    else if (probe === low) return null; // used at or before the bound: not this search's to place
+    else hi = probe;
+  }
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if ((await count(mid)) > n) hi = mid;
+    else lo = mid;
+  }
+  return inBlock(p, hi, who, n);
 }
 
 const consentTuple = (c) => [BigInt(c.agentId), BigInt(c.sponsorId), c.owner, BigInt(c.maxPremiumBps), BigInt(c.nonce), BigInt(c.deadline)];
@@ -258,6 +582,12 @@ export class PriorsV2 {
    * With `seatVaultV4` (the growth seat vault), new seats go to it; a seat already open stays on its own vault.
    * With `seatVaultV5` and `seatVaultV5AgentId` (SeatVaultV5 and its root), `borrow` and `pay` on a line V5 sponsors take
    * its step first (float.mjs `v5BeforeBorrow`).
+   * `waitTimeoutMs` (default 180000): a wall-clock bound on a write from its broadcast to its conclusive answer (the
+   * broadcast, the hash lookups, the receipt and replacement wait, reading its result); past it, TX_UNCONFIRMED.
+   * `journal: { before({ name, hash, nonce, raw, sentBlock }), settled(hash) }` (optional, a key held here): every
+   * write hands its signed transaction to `before`, which must record it durably, before the broadcast (and may stop
+   * it by throwing), and `settled` once its outcome is conclusive (see sendChecked). The CLI's (sdk/tx-record.mjs
+   * keyJournal) records it and checks the key's lock.
    */
   constructor(opts = {}) {
     const a = opts.addresses || {};
@@ -278,6 +608,8 @@ export class PriorsV2 {
     this.vaultV5 = a.seatVaultV5 ? new ethers.Contract(a.seatVaultV5, SEAT_VAULT_V5_ABI, run) : null;
     // every interface a call here can revert with: a vault or treasury call bubbles the pool's errors up
     this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), ...(this.vaultV5 ? [this.vaultV5.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
+    this._ifaces.journal = opts.journal || null; // sendChecked reads it with the interfaces every write passes
+    this._ifaces.waitTimeoutMs = opts.waitTimeoutMs ?? 180_000; // how long a sent write waits for its receipt
     this.toUnits = toUnits;
   }
 
@@ -313,9 +645,10 @@ export class PriorsV2 {
     const usdg = await this._usdg();
     await this._ensure(usdg, await this.pool.getAddress(), assets, "deposit");
     const min = minShares ?? ((await this.pool.convertToShares(assets)) * 995n) / 1000n;
-    const rc = await sendChecked(this.pool, "deposit", [assets, receiver || me, min], this._ifaces);
-    const ev = this._event(rc, "Deposited");
-    return { hash: rc.hash, assets, shares: ev ? ev.args.shares : null };
+    return sendChecked(this.pool, "deposit", [assets, receiver || me, min], this._ifaces, (rc) => {
+      const ev = this._event(rc, "Deposited");
+      return { hash: rc.hash, assets, shares: ev ? ev.args.shares : null };
+    });
   }
 
   /** Withdraw `shares` (bigint) or `'all'`. Inside the 7-day hold, 0.5% stays with the pool. */
@@ -323,9 +656,10 @@ export class PriorsV2 {
     const me = await this.me();
     const s = shares === "all" ? await this.pool.shares(me) : BigInt(shares);
     if (s === 0n) throw new Error(`${me} holds no pool shares`);
-    const rc = await sendChecked(this.pool, "withdraw", [s, receiver || me], this._ifaces);
-    const ev = this._event(rc, "Withdrawn");
-    return { hash: rc.hash, shares: s, assets: ev ? ev.args.assets : null };
+    return sendChecked(this.pool, "withdraw", [s, receiver || me], this._ifaces, (rc) => {
+      const ev = this._event(rc, "Withdrawn");
+      return { hash: rc.hash, shares: s, assets: ev ? ev.args.assets : null };
+    });
   }
 
   /** A lender's shares, their value now, and when the early-exit fee stops applying. */
@@ -369,8 +703,9 @@ export class PriorsV2 {
     const vault = this._newSeatVault();
     const token = this.token || (this.token = new ethers.Contract(await vault.token(), ERC20_ABI, this.signer));
     const { seatSize } = await vault.params();
-    await this._ensure(token, await vault.getAddress(), seatSize, "offer");
-    return { hash: (await sendChecked(vault, "offer", [agentId], this._ifaces)).hash, seatSize, seatVault: await vault.getAddress() };
+    const at = await vault.getAddress();
+    await this._ensure(token, at, seatSize, "offer");
+    return { hash: (await sendChecked(vault, "offer", [agentId], this._ifaces)).hash, seatSize, seatVault: at };
   }
   /** Take back an untaken offer (the staker's own by default). */
   async withdrawOffer(agentId, staker) {
@@ -494,13 +829,15 @@ export class PriorsV2 {
   async register(uri = "") {
     const reg = await this._registry();
     const me = (await this.me()).toLowerCase();
-    const rc = await sendChecked(reg, "register", [uri], this._ifaces);
+    const regAddr = (await reg.getAddress()).toLowerCase();
     const T = ethers.id("Transfer(address,address,uint256)");
     const ZERO = ethers.ZeroHash;
-    const regAddr = (await reg.getAddress()).toLowerCase();
-    const ours = rc.logs.filter((l) => l.address.toLowerCase() === regAddr && l.topics.length === 4 && l.topics[0] === T && l.topics[1] === ZERO && ethers.getAddress("0x" + l.topics[2].slice(26)).toLowerCase() === me);
-    if (ours.length !== 1) throw new Error(`expected one identity minted to ${me} in tx ${rc.hash}, found ${ours.length}`);
-    return Number(BigInt(ours[0].topics[3]));
+    // a mint not found in a mined receipt is TX_UNCONFIRMED (mined), never an error that invites a second identity
+    return sendChecked(reg, "register", [uri], this._ifaces, (rc) => {
+      const ours = rc.logs.filter((l) => l.address.toLowerCase() === regAddr && l.topics.length === 4 && l.topics[0] === T && l.topics[1] === ZERO && ethers.getAddress("0x" + l.topics[2].slice(26)).toLowerCase() === me);
+      if (ours.length !== 1) throw new Error(`expected one identity minted to ${me}, found ${ours.length}`);
+      return Number(BigInt(ours[0].topics[3]));
+    });
   }
 
   /**
@@ -551,9 +888,10 @@ export class PriorsV2 {
     const vault = await this._offerVault(agentId, staker);
     if (!vault) throw new Error(`no seat offer from ${staker} on agent #${agentId}`);
     const sponsorId = await vault.agentId();
+    const at = await vault.getAddress();
     const { consent, sig } = await this.signConsent({ agentId, sponsorId, maxPremiumBps: 0 });
     const rc = await sendChecked(vault, "accept", [agentId, staker, consentTuple(consent), sig], this._ifaces);
-    return { hash: rc.hash, sponsorId: Number(sponsorId), seatVault: await vault.getAddress() };
+    return { hash: rc.hash, sponsorId: Number(sponsorId), seatVault: at };
   }
 
   /** The fee for `amount` over `termSeconds` for this agent (its sponsor's premium included), from the pool. */
@@ -567,6 +905,12 @@ export class PriorsV2 {
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
    * On a SeatVaultV5 line (`seatVaultV5` and `seatVaultV5AgentId` in the addresses), V5's step first (float.mjs
    * `v5BeforeBorrow`: the owner's refresh, or the key's noteDelegate); the result then says `v5Refreshed`, `v5Noted`.
+   * A borrow whose answer was lost (the broadcast's or the receipt's) throws BORROW_UNCONFIRMED with the amount as
+   * `borrowed` (`loanId` and `dueAt` null, `unconfirmed: true`, the tx `hash` and `nonce`): the loan may exist, or the
+   * transaction may still be pending, so the open loans alone settle nothing. Borrow again only once `txStatus(hash,
+   * { nonce, sentBlock, raw })` says it is final and did not run. A borrow that mined but whose loan cannot be read
+   * from its receipt also throws it (`mined: true`): the loan is open. A refusal before sending, a mined revert or a
+   * cancelled transaction is an ordinary error (see sendChecked): nothing was borrowed.
    */
   async borrow(agentId, amount, termSeconds, { to, maxFee } = {}) {
     const units = toUnits(amount);
@@ -574,10 +918,22 @@ export class PriorsV2 {
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
     if (this.vaultV5) this._needSigner();
     const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, amount: units });
-    const rc = await sendChecked(this.pool, "borrow", [agentId, units, term, to || (await this.me()), fee], this._ifaces);
-    const ev = this._event(rc, "Borrowed");
-    if (!ev) throw new Error("Borrowed event not found");
-    return { hash: rc.hash, loanId: Number(ev.args.loanId), principal: ev.args.principal, fee: ev.args.fee, dueAt: Number(ev.args.dueAt), ...(v5.v5 ? { v5Refreshed: v5.refreshed, v5Noted: v5.noted } : {}) };
+    const recipient = to || (await this.me());
+    try {
+      return await sendChecked(this.pool, "borrow", [agentId, units, term, recipient, fee], this._ifaces, (rc) => {
+        const ev = this._event(rc, "Borrowed");
+        if (!ev) throw new Error("no Borrowed event in the receipt");
+        return { hash: rc.hash, loanId: Number(ev.args.loanId), principal: ev.args.principal, fee: ev.args.fee, dueAt: Number(ev.args.dueAt), ...(v5.v5 ? { v5Refreshed: v5.refreshed, v5Noted: v5.noted } : {}) };
+      });
+    } catch (e) {
+      if (e?.code !== "TX_UNCONFIRMED") throw e;
+      const why = e.cause?.shortMessage || e.cause?.message || String(e.cause);
+      const what = `a borrow of ${fmtUsdg(units)} USDG for agent #${agentId}`;
+      throw Object.assign(new Error(e.mined
+        ? `${what} was mined (tx ${e.hash}) but its loan could not be read from the receipt (${why}): the loan is open. Do not borrow again, and repay it before its due date`
+        : `${what} was sent${e.hash ? ` (tx ${e.hash}, nonce ${e.nonce})` : ""} and its answer was lost (${why}): it may have opened a loan, or may still be pending. Do not borrow again until this transaction is final (mined, reverted, or replaced: txStatus); if it opened a loan, repay it before its due date`),
+      { code: "BORROW_UNCONFIRMED", borrowed: units, loanId: null, dueAt: null, unconfirmed: true, mined: e.mined, hash: e.hash, nonce: e.nonce, raw: e.raw, sentBlock: e.sentBlock, cause: e.cause });
+    }
   }
 
   /**
@@ -601,6 +957,90 @@ export class PriorsV2 {
     await this._ensure(await this._usdg(), await this.pool.getAddress(), due, `repay(${loanId})`);
     const rc = await sendChecked(this.pool, "repay", [loanId, BigInt(agentId), due], this._ifaces);
     return { hash: rc.hash, loanId: Number(loanId), paid: due };
+  }
+
+  /**
+   * Whether a transaction is final, and whether it ran: for one whose answer was lost (TX_UNCONFIRMED and
+   * BORROW_UNCONFIRMED carry its `hash`, `nonce`, `sentBlock` and, signed here, `raw`). `state` is
+   *   "mined"     a receipt with status 1: it ran. Its own receipt, or that of a copy of the same call at the same
+   *               nonce with another hash (a fee-bumped speed-up: `by` is that hash): never "replaced", never safe to
+   *               send again
+   *   "reverted"  a receipt with status 0 (its own, or the copy's): it did nothing
+   *   "replaced"  the transaction that used its nonce was found, in the block where this sender's nonce count passed
+   *               it, and it is a different call (`by`): this one can never run, so it did not run. Telling a copy
+   *               from a different call needs the recorded signed bytes (`raw`) or the node's copy of this one; without
+   *               either it stays "unsettled"
+   *   "included"  the node shows it (or the copy) mined but its receipt is not readable yet: it may have run
+   *   "unsettled" its nonce was used, but this node cannot show by which transaction
+   *   "pending"   known to this node, its nonce not used yet
+   *   "not-found" unknown to this node, its nonce not used (mempools are node-local, so another node may hold it, or it
+   *               may still arrive). Settle it by sending the same signed bytes again
+   *               (`provider.broadcastTransaction(raw)`: same hash, same nonce, it cannot make a second one), or by having
+   *               a wallet cancel the nonce (a 0-value transfer to itself at that nonce, at a higher fee) and waiting for
+   *               that nonce to be mined.
+   * `final` is true only for mined, reverted or replaced, and only once the deciding block is at or below the chain's
+   * finalized block with the canonical hash at its number (`finality`: "finalized"; "waiting" above it, "reorged" when
+   * the canonical block there has another hash, "unknown" when either cannot be read). Until then the verdict is shown
+   * but may still change. Send the call again only once `final` is true and `ran` false.
+   * `from` defaults to the signer's address; `sentBlock` bounds the search for the nonce's block. `seen` (returned, to
+   * pass back next time) keeps what was observed: `consumedBy` { block, blockHash, hash }, the block where the nonce's
+   * transaction was found, re-read from its body later, since a node can drop the state that found it before that block
+   * is finalized; `consumedAt` { block, blockHash }, a block at which the nonce was already counted as used. `explorer`
+   * ({ from, nonce, sentBlock }) => hashes (sdk/explorer.mjs) is asked only when the node cannot find the nonce's
+   * transaction itself, and only as a pointer: each hash it names is checked on the RPC.
+   */
+  async txStatus(hash, { nonce, from, sentBlock, raw, seen, explorer } = {}) {
+    const p = this.provider;
+    const tx = await p.getTransaction(hash);
+    const mine = raw ? ethers.Transaction.from(raw) : null;
+    const who = tx ? tx.from : mine ? mine.from : from ?? (this.signer ? await this.signer.getAddress() : null);
+    const n = tx ? tx.nonce : mine ? mine.nonce : nonce == null ? null : Number(nonce);
+    const ref = mine || tx; // the call it makes: what a fee-bumped copy repeats
+    const obs = { ...(seen || {}) };
+    const out = { hash, from: who, nonce: n };
+    const verdict = async (rc, by) => {
+      const finality = await finalityOf(p, rc.blockNumber, rc.blockHash);
+      return { ...out, state: rc.status === 1 ? "mined" : "reverted", final: finality === "finalized", ran: rc.status === 1, block: rc.blockNumber, finality, ...(by ? { by } : {}), seen: obs };
+    };
+    const notFinal = (state, more = {}) => ({ ...out, state, final: false, ran: null, ...more, seen: obs });
+    const rc = await p.getTransactionReceipt(hash);
+    if (rc) return verdict(rc);
+    if (tx && tx.blockNumber != null) return notFinal("included", { block: tx.blockNumber });
+    const open = notFinal(tx ? "pending" : "not-found");
+    if (who == null || n == null) return open;
+    let user = null;
+    if (obs.consumedBy) {
+      try {
+        user = await inBlock(p, obs.consumedBy.block, who, n);
+        if (!user) delete obs.consumedBy; // that block no longer holds it: search again
+      } catch (_) { /* the block cannot be read now: search */ }
+    }
+    if (!user) {
+      // has its nonce been used? Counted at one pinned block; if so, find the transaction that used it
+      try {
+        const head = await p.getBlock("latest");
+        if ((await p.getTransactionCount(who, head.number)) <= n) return open;
+        if (!obs.consumedAt) obs.consumedAt = { block: head.number, blockHash: head.hash };
+        user = await nonceUser(p, who, n, head.number, sentBlock);
+      } catch (_) {
+        user = null; // a read this node cannot serve: nothing is claimed
+      }
+    }
+    if (!user && explorer) user = await viaExplorer(p, explorer, who, n, sentBlock).catch(() => null);
+    if (!user) return notFinal("unsettled");
+    obs.consumedBy = { block: user.block, blockHash: user.blockHash, hash: user.tx.hash };
+    const by = user.tx.hash;
+    if (by.toLowerCase() === String(hash).toLowerCase()) {
+      const again = await p.getTransactionReceipt(hash); // it is ours: final only once its receipt says how it ran
+      return again ? verdict(again) : notFinal("included", { block: user.block });
+    }
+    if (!ref) return notFinal("unsettled", { by, block: user.block }); // nothing to tell a copy from another call
+    if (sameCall(ref, user.tx)) {
+      const copy = await p.getTransactionReceipt(by);
+      return copy ? verdict(copy, by) : notFinal("included", { by, block: user.block });
+    }
+    const finality = await finalityOf(p, user.block, user.blockHash);
+    return { ...out, state: "replaced", final: finality === "finalized", ran: false, by, block: user.block, finality, seen: obs };
   }
 
   /** Every loan of an agent, decoded. */
@@ -670,8 +1110,9 @@ export class PriorsV2 {
     const { consent, sig } = await this.signConsent({ agentId, sponsorId: await v.agentId(), maxPremiumBps, deadline });
     const t = new ethers.Contract(token, ERC20_ABI, this.signer);
     await this._ensure(t, await v.getAddress(), units, `openStockLine(${agentId})`);
-    const rc = await sendChecked(v, "open", [BigInt(agentId), ethers.getAddress(token), units, consentTuple(consent), sig], this._ifaces);
-    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
+    // the position is read after the write: a failed read is TX_UNCONFIRMED (mined), never an error inviting a 2nd deposit
+    return sendChecked(v, "open", [BigInt(agentId), ethers.getAddress(token), units, consentTuple(consent), sig], this._ifaces,
+      async (rc) => ({ hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) }));
   }
 
   /** Add `amount` of the position's own token (the depositor only): a higher borrow limit. */
@@ -681,16 +1122,16 @@ export class PriorsV2 {
     if (Number(p.status) !== 1) throw new Error(`agent #${agentId} has no open stock position`);
     const units = await this._tokenUnits(p.token, amount);
     await this._ensure(new ethers.Contract(p.token, ERC20_ABI, this.signer), await v.getAddress(), units, `addCollateral(${agentId})`);
-    const rc = await sendChecked(v, "addCollateral", [BigInt(agentId), units], this._ifaces);
-    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
+    return sendChecked(v, "addCollateral", [BigInt(agentId), units], this._ifaces,
+      async (rc) => ({ hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) }));
   }
 
   /** Close agent `agentId`'s stock line (depositor or controller): no new loans; the tokens go back to the depositor
    *  now with no loan open, otherwise with the repayment of the last one. */
   async closeStockLine(agentId) {
     this._needSigner();
-    const rc = await sendChecked(this._need(this.stockVault, "stockVault"), "close", [BigInt(agentId)], this._ifaces);
-    return { hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) };
+    return sendChecked(this._need(this.stockVault, "stockVault"), "close", [BigInt(agentId)], this._ifaces,
+      async (rc) => ({ hash: rc.hash, agentId: Number(agentId), position: await this.stockPosition(agentId) }));
   }
 
   _event(rc, name) {

@@ -334,8 +334,9 @@ export async function resolve(opts = {}) {
 /**
  * Resolve the v2 set: a PriorsV2 client on deployments/<chainId>.v2.json (or the file PRIORS_ADDRESSES names).
  * RPC_URL (comma-separated failover list) defaults to Robinhood Chain mainnet. The signer comes from PRIORS_KEY, or
- * PRIVATE_KEY like the v1 tools; with neither, the client is read-only.
- * @param {{rpc?: string, privateKey?: string, addressesFile?: string, needSigner?: boolean}} [opts]
+ * PRIVATE_KEY like the v1 tools; with neither, the client is read-only. `journal` is passed to PriorsV2 (its records of
+ * signed transactions, kept before each broadcast: see PriorsV2's constructor), and so is `waitTimeoutMs`.
+ * @param {{rpc?: string, privateKey?: string, addressesFile?: string, needSigner?: boolean, journal?: object, waitTimeoutMs?: number}} [opts]
  */
 export async function resolveV2(opts = {}) {
   const { PriorsV2 } = await import("./priors-v2.mjs");
@@ -378,7 +379,7 @@ export async function resolveV2(opts = {}) {
   // A plain Wallet, as the v2 client is tested with: every write waits for its receipt before the next is sent.
   if (pk) signer = new ethers.Wallet(pk, provider);
   else if (opts.needSigner) throw new Error("PRIORS_KEY (or PRIVATE_KEY) is not set: this command signs transactions.");
-  const priors = new PriorsV2({ provider, signer, addresses });
+  const priors = new PriorsV2({ provider, signer, addresses, journal: opts.journal, waitTimeoutMs: opts.waitTimeoutMs });
   return { provider, signer, chainId, rpc, addresses, priors, address: signer ? await signer.getAddress() : null };
 }
 
