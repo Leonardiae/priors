@@ -38,5 +38,10 @@
   "keeperHelper": "0x3Ba233d2ac1C6233C5fA954C2DaaD83fcCFE5372",
   "seatVaultV5": "0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD",
   "seatVaultV5AgentId": 8762,
-  "seatVaultV5Block": 85924243
+  "seatVaultV5Block": 85924243,
+  "treasuryV5": "0xFe8fdf43c4b0443aCF8E8CD8facD62F1B770e267",
+  "treasuryV5AgentId": 8793,
+  "treasuryV5Block": 88669178,
+  "inviteBondV2": "0x346d3360B7258a18E8a2a55fe20E0F467113a53A",
+  "inviteBondV2Block": 88669162
 }

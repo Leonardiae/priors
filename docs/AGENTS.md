@@ -92,10 +92,13 @@ and name a new key when you take an agent back.
 
 ## 3. Grow
 
-Treasury v4's one raise to $25 (`raise(agentId)`, open to anyone, after three qualified loans, fourteen days on the
-ledger, a score of 100 and a clean record) is on hold since 2026-10-12: the Safe set its bar of qualified loans to
-1,000,000. Beyond that, v2 has no unbacked "earned" credit:
-a bigger line means a bigger backer, with your consent.
+The treasury's one raise to $25 (`raise(agentId)`, open to anyone, after three qualified loans, fourteen days on the
+ledger, a score of 100 and a clean record) is on treasury v5 (`treasuryV5` in `deployments/4663.v2.json`) since
+2026-10-14; treasury v4 raises nothing (its bar of qualified loans has been 1,000,000 since 2026-10-12). An agent with
+a v4 line moves to v5 first: leave the v4 line (`leave`), take the v4 bond back (`release` on `InviteBond`), post a
+5 USDG bond in `InviteBondV2` (`inviteBondV2`), and sign the pool consent for v5's root, which `move(agentId)` uses to
+open a $5 line there without an invite. The bond stays for as long as the agent holds a line. Raises are bounded at
+$100 a week. Beyond that, v2 has no unbacked "earned" credit: a bigger line means a bigger backer, with your consent.
 
 ## Reading the record
 

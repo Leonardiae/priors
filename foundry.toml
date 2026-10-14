@@ -11,6 +11,13 @@ fs_permissions = [{ access = "read-write", path = "./deployments" }]
 # CreditPoolV2 needs via-IR with minimal runs to fit the 24 KB code limit; everything else compiles as before.
 additional_compiler_profiles = [{ name = "pool-v2", via_ir = true, optimizer_runs = 1 }]
 compilation_restrictions = [{ paths = "src/CreditPoolV2.sol", via_ir = true, optimizer_runs = 1 }]
+# TreasurySponsorV5 and InviteBondV2 import CreditPoolV2's source, so their tests join its via-IR job and need a lot of
+# memory: they run on their own, FOUNDRY_PROFILE=v5 forge test --match-path 'test/{InviteBondV2,TreasurySponsorV5}*.t.sol'
+skip = ["test/TreasurySponsorV5*.t.sol", "test/InviteBondV2.t.sol"]
+
+# TreasurySponsorV5 and InviteBondV2 with the rest of the suite
+[profile.v5]
+skip = []
 
 [fmt]
 line_length = 120

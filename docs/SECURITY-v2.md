@@ -61,6 +61,29 @@ Refuted: draining the treasury's USDG, misrouting sponsor fees, `sweep` re-entra
 contracts, chains or versions, invite malleability, strangers burning the first-line cap, `reclaim`/`retire`
 abuse, `rescue` reaching the asset or the stake.
 
+## TreasurySponsorV5 and InviteBondV2 (the raise to $25, 2026-10-14)
+
+Live since 2026-10-14: `TreasurySponsorV5` [`0xFe8f…e267`](https://robinhoodchain.blockscout.com/address/0xFe8fdf43c4b0443aCF8E8CD8facD62F1B770e267)
+(root #8793) and `InviteBondV2` [`0x346d…a53A`](https://robinhoodchain.blockscout.com/address/0x346d3360B7258a18E8a2a55fe20E0F467113a53A),
+both owned by the Safe; their runtime code equals the build of `src/TreasurySponsorV5.sol` and `src/InviteBondV2.sol`
+here, immutables masked. Treasury v4 keeps every first line; v5 is where a v4 agent goes to be raised to $25. v5 names
+no inviter: an agent reaches it only by `move`, once v4 lined it, with its owner's InviteBondV2 bond and pool consent
+and no InviteBond (v1) bond still posted.
+
+| id | sev | finding | status | evidence |
+|---|---|---|---|---|
+| H1 (our audit of 2026-10-10) | High | **The invite bond came back under an open line.** InviteBond releases a bond after the treasury's `minQualified` qualified repayments since the deposit, with the line still open: bond, three small loans, bond back, borrow the line, default with nothing at stake. | **Held on v4 since 2026-10-12** (the Safe set v4's `minQualified`, which InviteBond reads, to 1,000,000: no count of repayments releases a v1 bond, and v4 raises nothing). **Fixed in InviteBondV2:** a bond comes back only with no line at all, no loan open, 4 days past its deposit; no deposit while a loan is open or under another sponsor's line. | `test/InviteBondV2.t.sol` (`test_release_onlyOnceTheLineIsClosed_whateverTheRecord`), `test/TreasurySponsorV5.t.sol` (`test_seasonedRecord_keepsTheBond_buyerStillBlocked`) |
+| M6 (same audit) | Medium | **Raises spent the first lines' weekly cap.** v4's `raise` charges the same `epochCap` as `firstLine`, so a few raises could use up a week's room for newcomers. | **Fixed in v5:** raises spend their own budget, `raiseCap` (100 USDG a week, on one epoch clock with `epochCap`). | `test_raises_neverSpendTheFirstLinesRoom`, `test_raiseCap_boundsRaisesPerEpoch` |
+| T10 on v5 | Medium | invite → record → `raise` → default, as on v4. | **Residual, bounded:** the 5 USDG bond stays on the raised line for its whole life, so a default costs the treasury at most $20 net per identity, and raises are bounded by `raiseCap`, $100 a week. | `test/TreasurySponsorV5Port.t.sol` (`test_T10_exploit_farmRaiseThenDefault`) |
+| R-1 (review) | High | `move` dropped v4's `seeded` flag, so a protocol-seeded record could be raised at once on v5. | **Fixed before deployment:** the flag is copied, and `eligibleForRaise` also reads v4's flag live. | `test_move_keepsThePreviousSeededFlag`, `test_move_aLaterSeededFlagOnThePreviousTreasuryStillHolds` |
+| R-2 (review) | Medium | A `move` straight from the v4 line left the v1 bond locked under the v5 line, where a default would slash it too (after a sale, the seller's bond for a buyer's default). | **Fixed before deployment:** `move` refuses while a v1 bond is posted; InviteBondV2 refuses a deposit under another sponsor's line, so the owner leaves v4 first. | `test_move_waitsForTheLegacyBondToBeGone`, `test_v2_firstDepositRefused_whileALoanIsOpenWithAnotherSponsor` |
+| R-3 | Low | A bond answers for the agent, not for one loan: after a sale, a buyer who hands a v5 agent to another root and defaults there forfeits the seller's V2 bond. A v1 bond posted on an agent already on v5 (v1 takes deposits at any time) is slashed with it on a default. | **Residual:** a seller closes the line and takes the bond back before selling; the product offers no v1 deposit on a v5 agent. | – |
+
+Kept from v4 and its tests: the invite path (unused while v5 names no inviter), the borrow-time bond check of
+GHSA-w9xg (a borrow on a v5 line is refused while the agent's V2 bond was posted by a wallet that is not its owner),
+`reclaim`, `collect`, `sweep`, `retire`. Two internal review rounds per change (Codex and a second agent), each finding
+fixed or stated here.
+
 ## SeatVaultV2 → SeatVaultV3
 
 Since 2026-09-25 the live seat vault is **SeatVaultV3** (`0x59D155C42A9263fA7596867b992bB3e84dF680a9`), SeatVaultV2 with the V-2 fixes below and nothing else; the rows below apply to V3 unless they say otherwise. SeatVaultV2 is empty and paused.
