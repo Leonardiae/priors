@@ -25,7 +25,16 @@
 // price impact (about 0.1% per 1,000 USDG on 2026-10-01): a large trade may need a wider slippage or several trades.
 // Every approval is for exactly the amount of the trade after it, the shape the gas gate sponsors; a call bundle is
 // sponsorable when its amount is within PT_USDG.maxUsdgPerOp (2,000).
-import { formatUnits, getAddress, parseUnits, encodeFunctionData, decodeFunctionResult } from "viem";
+//
+// Sending (`wallet`): each call is simulated, sent, and waited for (at most `waitTimeoutMs`, 3 minutes by default). A step
+// that may have been sent but whose outcome is not known throws TX_UNCONFIRMED ({ code, unconfirmed: true, hash, hashes:
+// the steps done before, step }): do not run the trade again before checking the balances (ptPosition), or it could
+// trade twice. A lost answer of a transaction the node shows mined is no error: the trade goes on. A wallet that signs in
+// the process (an ethers Wallet, a viem local account) gives the hash before the broadcast, so only it can tell a node's
+// "insufficient funds" (an ordinary error, nothing sent) from a transaction already taken; with a wallet that sends
+// itself, any failure but its user declining is TX_UNCONFIRMED, and its deadline runs from the moment it is asked (its
+// user's approval included). `onSend(hash, what)` is told of each step as it leaves.
+import { formatUnits, getAddress, parseUnits, encodeFunctionData, decodeFunctionResult, keccak256 } from "viem";
 import { PENDLE, PENDLE_ADDR, ORACLE_ABI, PT_ABI, buildBuy, buildSell, buildRedeem, quoteBuy, quoteSell, marketOf, maturedMarkets } from "./pendle-pt.mjs";
 import PT from "../deployments/pt-usdg.4663.json" with { type: "json" };
 
@@ -169,36 +178,139 @@ async function accountOf(account, wallet) {
   throw new Error("give the account that signs (account) or a wallet to send with");
 }
 
-/** Wait for `hash` and check it succeeded. */
-async function receipt(client, hash, { timeoutMs = 180_000 } = {}) {
-  const end = Date.now() + timeoutMs;
+// ---- sending: a step whose broadcast may have gone through is never given back as a bare error ----
+// A caller that retries a bare error after the node took the transaction trades twice (GHSA-g5cv's class, for PT-USDG).
+// So: a wallet that signs in this process (an ethers Wallet, a viem local account) signs first, which gives the hash
+// before anything is sent; after a failed broadcast the node is asked about that hash: mined is done, pending is waited
+// for, unknown is a refusal only for "insufficient funds". Anything else, and any failure of a wallet that sends itself
+// (a browser wallet) other than its user declining, is TX_UNCONFIRMED: { code, unconfirmed: true, hash (null when the
+// wallet never said it), hashes (the steps that went through before), step }. Waiting is bounded by `waitTimeoutMs`.
+
+/** TX_UNCONFIRMED: step `c` may have been sent and what it did is not known; running the trade again could trade twice. */
+function unconfirmed(c, hash, cause, hashes, { awaiting = false } = {}) {
+  const why = cause?.shortMessage || cause?.message || String(cause);
+  const what = awaiting ? "got no answer from the wallet in time: it may still be awaiting approval there, or it may have been sent" : "may have been sent";
+  return Object.assign(new Error(`${c.what || "a call"}${hash ? ` (tx ${hash})` : ""} ${what}, and what it did is not known (${why}): check the balances (ptPosition) before trying again, since running the trade again could trade twice`),
+    { code: "TX_UNCONFIRMED", unconfirmed: true, hash: hash ?? null, hashes: [...hashes], step: c.what || null, cause });
+}
+const causes = (e) => { const out = []; for (let x = e, i = 0; x && i < 8; x = x.cause, i++) out.push(x); return out; };
+/** The wallet's own user declined: nothing was sent. */
+const declined = (e) => causes(e).some((x) => x.code === "ACTION_REJECTED" || x.code === 4001 || x.name === "UserRejectedRequestError");
+/** The node refused the transaction for its funds (gas or value). A refusal only once the node shows no trace of it. */
+const noFunds = (e) => causes(e).some((x) => x.code === "INSUFFICIENT_FUNDS" || /insufficient funds/i.test(String(x.shortMessage || x.message || "")));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** `onSend` told of a step that already left: its own failure, thrown or a promise that rejects, cannot undo the send,
+ *  so it never stops the trade (and a rejection is consumed, not left unhandled). */
+const told = (onSend, hash, what) => {
+  try { const r = onSend?.(hash, what); if (r && typeof r.then === "function") r.then(null, () => {}); } catch (_) { /* the step is out; its receipt decides */ }
+};
+/** `p`, or `undefined` once `ms` have passed (a request that never answers does not hold the trade). */
+const within = (p, ms) => { let t; return Promise.race([p, new Promise((r) => { t = setTimeout(r, Math.max(1, ms)); })]).finally(() => clearTimeout(t)); };
+const succeeded = (rc) => rc.status === "0x1" || rc.status === 1 || rc.status === "success";
+
+/** What the node says of `hash` before `end` (one deadline for both lookups): "mined" (with `rc`), "pending",
+ *  "unknown", or null when a lookup failed or the deadline passed. */
+async function lookup(client, hash, end) {
+  try {
+    const rc = await within(rpc(client, "eth_getTransactionReceipt", [hash]), end - Date.now());
+    if (rc === undefined) return null;
+    if (rc) return { state: "mined", rc };
+    if (Date.now() >= end) return null;
+    const tx = await within(rpc(client, "eth_getTransactionByHash", [hash]), end - Date.now());
+    if (tx === undefined) return null;
+    return { state: tx ? "pending" : "unknown" };
+  } catch (_) { return null; }
+}
+/** Step `c`'s receipt `rc`: itself when it succeeded, an ordinary error when it reverted (that step did nothing). */
+function checked(c, hash, rc, hashes) {
+  if (!succeeded(rc)) throw Object.assign(new Error(`${c.what || "the call"} (tx ${hash}) reverted: that step did nothing`), { code: "CALL_EXCEPTION", hash, hashes: [...hashes] });
+  return rc;
+}
+
+/** Wait, until `end`, for step `c`'s receipt: done when it succeeded, an ordinary error when it reverted (that step did
+ *  nothing), TX_UNCONFIRMED when none came; a lookup that fails is asked again. */
+async function receipt(client, c, hash, hashes, end) {
+  let last = null;
   for (;;) {
-    const rc = await rpc(client, "eth_getTransactionReceipt", [hash]);
-    if (rc) { if (rc.status !== "0x1" && rc.status !== 1 && rc.status !== "success") throw new Error(`transaction ${hash} reverted`); return rc; }
-    if (Date.now() > end) throw new Error(`transaction ${hash} not mined after ${timeoutMs / 1000} s`);
-    await new Promise((r) => setTimeout(r, 1500));
+    let rc;
+    try { rc = await within(rpc(client, "eth_getTransactionReceipt", [hash]), end - Date.now()); } catch (e) { last = e; }
+    if (rc) return checked(c, hash, rc, hashes);
+    if (Date.now() >= end) throw unconfirmed(c, hash, last || new Error("no receipt in time"), hashes);
+    await sleep(Math.min(1500, Math.max(1, end - Date.now())));
   }
 }
 
-/** Send `calls` in order from `wallet`, each simulated first, each waited for: the hashes. */
-export async function sendCalls(client, wallet, calls, from) {
+/** The signed bytes of step `c` when `wallet` signs in this process (an ethers Wallet; a viem WalletClient with a local
+ *  account), else null. Signing sends nothing: an error here is an ordinary one. An ethers signer holds its key here
+ *  only with a `signingKey` (a Wallet): a NonceManager counts its nonces in its own sendTransaction, and a
+ *  JsonRpcSigner has the node sign, so both send themselves. */
+async function signHere(wallet, c) {
+  if (wallet.signingKey != null && typeof wallet.signTransaction === "function" && typeof wallet.populateTransaction === "function" && wallet.provider) {
+    return wallet.signTransaction(await wallet.populateTransaction({ to: c.to, data: c.data, value: c.value })); // ethers Wallet
+  }
+  if (wallet.account?.type === "local" && typeof wallet.prepareTransactionRequest === "function" && typeof wallet.signTransaction === "function") {
+    return wallet.signTransaction(await wallet.prepareTransactionRequest({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value }));
+  }
+  return null;
+}
+
+/** Send `calls` in order from `wallet`, each simulated first, each waited for: the hashes. `onSend(hash, what)` is told
+ *  of each step as it leaves: signed here, just before its broadcast (if it throws, nothing is sent); with a wallet that
+ *  sends itself, once the wallet answers (null when its answer was lost; if it throws, the step goes on). */
+export async function sendCalls(client, wallet, calls, from, { waitTimeoutMs = 180_000, onSend } = {}) {
   const hashes = [];
   for (const c of calls) {
     try { await rpc(client, "eth_call", [{ from, to: c.to, data: c.data }, "latest"]); } catch (e) { throw new Error(`${c.what || "the call"} would revert: ${e.shortMessage || e.message}`); }
-    let hash;
-    if (wallet.account && typeof wallet.sendTransaction === "function" && !wallet.getAddress) {
-      hash = await wallet.sendTransaction({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value });
+    const signed = await signHere(wallet, c);
+    let hash = null;
+    if (signed) {
+      hash = keccak256(signed);
+      const end = Date.now() + waitTimeoutMs;
+      // awaited, within the deadline: a caller that could not record the step (or never answers) stops it before it is
+      // sent; a rejection after the deadline is consumed
+      const recorded = Promise.resolve(onSend?.(hash, c.what)).then(() => true);
+      recorded.catch(() => {});
+      if ((await within(recorded, end - Date.now())) !== true) throw new Error(`${c.what || "the call"} was not sent: onSend gave no answer in time`);
+      let seen = null;
+      try {
+        const answer = await within(rpc(client, "eth_sendRawTransaction", [signed]), end - Date.now());
+        if (answer === undefined) throw unconfirmed(c, hash, new Error("no answer to the broadcast in time"), hashes);
+      } catch (e) {
+        if (e?.unconfirmed) throw e;
+        seen = await lookup(client, hash, end);
+        if (!seen) throw unconfirmed(c, hash, e, hashes);
+        if (seen.state === "unknown") {
+          if (noFunds(e)) throw Object.assign(new Error(`${c.what || "the call"} was refused: ${e.shortMessage || e.message}`), { code: "INSUFFICIENT_FUNDS", hashes: [...hashes], cause: e });
+          throw unconfirmed(c, hash, e, hashes);
+        }
+        // "mined" (its receipt in hand) or "pending" (waited for below): the node took it
+      }
+      if (seen?.state === "mined") checked(c, hash, seen.rc, hashes);
+      else await receipt(client, c, hash, hashes, end);
     } else {
-      const tx = await wallet.sendTransaction({ to: c.to, data: c.data, value: c.value });
-      hash = tx.hash;
+      // a wallet that sends itself: one deadline from the moment it is asked (its user's approval included), over its
+      // send (an ethers JsonRpcSigner polls the node before it returns) and the receipt
+      const end = Date.now() + waitTimeoutMs;
+      try {
+        const sending = wallet.account && typeof wallet.sendTransaction === "function" && !wallet.getAddress
+          ? wallet.sendTransaction({ account: wallet.account, chain: wallet.chain ?? null, to: c.to, data: c.data, value: c.value })
+          : Promise.resolve(wallet.sendTransaction({ to: c.to, data: c.data, value: c.value })).then((tx) => tx.hash);
+        hash = await within(sending, end - Date.now());
+        if (hash === undefined) throw unconfirmed(c, null, new Error("the wallet gave no answer in time"), hashes, { awaiting: true });
+      } catch (e) {
+        if (!e?.unconfirmed && declined(e)) throw e;
+        told(onSend, null, c.what);
+        throw e?.unconfirmed ? e : unconfirmed(c, null, e, hashes);
+      }
+      told(onSend, hash, c.what);
+      await receipt(client, c, hash, hashes, end);
     }
-    await receipt(client, hash);
     hashes.push(hash);
   }
   return hashes;
 }
 
-async function bundle(client, { kind, account, wallet, amount, slippageBps, minOut, approve = "auto", now, market }) {
+async function bundle(client, { kind, account, wallet, amount, slippageBps, minOut, approve = "auto", now, market, waitTimeoutMs, onSend }) {
   const from = await accountOf(account, wallet);
   const t = now ?? (await chainNow(client));
   let m = market != null ? marketOf(market) : VIEW;
@@ -234,7 +346,7 @@ async function bundle(client, { kind, account, wallet, amount, slippageBps, minO
   const out = { kind, account: from, chainId: PT_USDG.chainId, quote: { ...q, minOut: min, minOutText: fmt6(min) }, calls, warnings };
   if (!wallet) return out;
   if (have < units) throw new Error(warnings[0]);
-  return { ...out, hashes: await sendCalls(client, wallet, calls, from) };
+  return { ...out, hashes: await sendCalls(client, wallet, calls, from, { waitTimeoutMs, onSend }) };
 }
 
 /** Buy PT-USDG with `amount` USDG: the calls (approve, then the router's swap), sent when `wallet` is given. */

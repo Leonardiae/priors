@@ -54,7 +54,8 @@ class SlowPtChain extends ethers.JsonRpcProvider {
       this.lastSend = Date.now();
       return tx.hash;
     }
-    if (method === "eth_getTransactionReceipt") return Date.now() >= (this.minedAt.get(params[0]) ?? Infinity) ? { status: "0x1" } : null;
+    if (method === "eth_getTransactionReceipt") return !this.hidden?.has(params[0]) && Date.now() >= (this.minedAt.get(params[0]) ?? Infinity) ? { status: "0x1" } : null;
+    if (method === "eth_getTransactionByHash") return this.minedAt.has(params[0]) && !this.hidden?.has(params[0]) ? { hash: params[0] } : null;
     if (method !== "eth_call") throw new Error("mock: " + method);
     const { to, data } = params[0];
     if (lc(to) === lc(PT_USDG.router)) return "0x";
@@ -324,11 +325,12 @@ await test("GHSA-cq9v: save too: a save still running once its hold has ended ke
 // and the answer was the bare transport error.
 /** As SlowPtChain, mined at once, but the chain keeps the router's allowance (`st.allowance`, for whichever token) and what
  *  the swaps took from the wallet (`st.out`). A broadcast whose kind ("approve" or "swap") is in `st.drop` is taken and
- *  mined, then its answer is lost. `st.refuse` refuses the next transaction before it is sent: "estimate" (its estimate
- *  reverts) or "gas" (the node refuses the broadcast: no ETH for gas). */
+ *  mined, then its answer is lost; unless `st.showDropped`, the node asked afterwards does not show it either (another
+ *  node took it), so its outcome is not known. `st.refuse` refuses the next transaction before it is sent: "estimate"
+ *  (its estimate reverts) or "gas" (the node refuses the broadcast: no ETH for gas). */
 const PT_UNITS = 50_000_000n;
 class LossyPtChain extends SlowPtChain {
-  constructor(st) { super(st, 0); st.allowance ??= 0n; st.out = 0n; st.drop ??= []; }
+  constructor(st) { super(st, 0); st.allowance ??= 0n; st.out = 0n; st.drop ??= []; this.hidden = new Set(); }
   answer(method, params) {
     const st = this.st;
     if (method === "eth_estimateGas" && st.refuse === "estimate") { st.refuse = null; throw new Error("execution reverted"); }
@@ -337,6 +339,7 @@ class LossyPtChain extends SlowPtChain {
     const r = super.answer(method, params);
     if (method === "eth_sendRawTransaction") {
       const tx = ethers.Transaction.from(params[0]);
+      this.lastHash = tx.hash;
       if (st.sent.at(-1) === "approve") st.allowance = decodeFunctionData({ abi: PT_ABI, data: tx.data }).args[1];
       else { st.allowance -= PT_UNITS; st.out += PT_UNITS; } // each swap here takes 50
     }
@@ -346,7 +349,7 @@ class LossyPtChain extends SlowPtChain {
     const out = await super._send(payload);
     [payload].flat().forEach((p, i) => {
       const k = p.method === "eth_sendRawTransaction" && !out[i].error ? this.st.drop.indexOf(this.st.sent.at(-1)) : -1;
-      if (k >= 0) { this.st.drop.splice(k, 1); throw new Error("fetch failed: socket hang up (the node took the transaction; its answer was lost)"); }
+      if (k >= 0) { this.st.drop.splice(k, 1); if (!this.st.showDropped) this.hidden.add(this.lastHash); throw new Error("fetch failed: socket hang up (the node took the transaction; its answer was lost)"); }
     });
     return out;
   }
@@ -383,6 +386,13 @@ await test("GHSA-549m: a buy refused before anything was sent (its estimate reve
   const c = await call("pt_buy", { amount_usdg: 50 });
   assert.ok(!c.error && /Bought about/.test(c.text), c.text);
   assert.equal(st.out, PT_UNITS);
+});
+
+await test("a lost answer whose transaction the node shows mined: the buy is done and said so, counted once, and nothing is sent twice", async () => {
+  const st = { ...ptState(), allowance: PT_UNITS, drop: ["swap"], showDropped: true }, call = await ptCapped(st);
+  const first = await call("pt_buy", { amount_usdg: 50 });
+  assert.ok(!first.error && /Bought about/.test(first.text), first.text);
+  assert.deepEqual(st.sent, ["swap"]); assert.equal(st.out, PT_UNITS);
 });
 
 await test("GHSA-549m: pt_sell (pt_redeem shares the path) whose transaction was taken but whose answer was lost says it may have been sent, not the bare error", async () => {

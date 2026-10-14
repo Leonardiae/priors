@@ -1,5 +1,18 @@
 # @priors/mcp changelog
 
+## 0.9.3 (2026-10-14)
+
+- **A PT-USDG trade whose answer is lost is never said to have done nothing.** `pt_buy`, `pt_sell` and `pt_redeem` now
+  sign each step before sending it, so its hash is known first, and after a failed broadcast they ask the node about
+  that hash: a step the node shows mined goes on (the trade is done and said so, once), one it shows pending is waited
+  for, and "insufficient funds" with no trace of the transaction is a refusal that counts nothing. Any other failure
+  says the trade may have been sent, keeps a buy counted against `PRIORS_MAX_PT_TOTAL_USD`, and asks to check
+  `pt_position` and `wallet_balance` before trying again. Until now a node's "insufficient funds" was always a refusal,
+  though it can also answer a retried request after the first one was taken (GHSA-g5cv's class); the buy was then
+  uncounted and given back as nothing sent. Waiting for a receipt is bounded (3 minutes), a lookup that never answers
+  included, and a lookup that fails is asked again. The same change is in the SDK's `sdk/pt-usdg.mjs`, whose
+  `ptBuy`/`ptSell`/`ptRedeem` throw `TX_UNCONFIRMED` (with the hash and the steps done before) instead of a bare error.
+
 ## 0.9.2 (2026-10-13)
 
 - **Merchant text can no longer write a line outside the data fence, or spell its marker.** The marker's keyword was

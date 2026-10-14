@@ -1177,12 +1177,13 @@ extendPriorsV2({
 /* PT-USDG (sdk/pt-usdg.mjs): Pendle's principal token for USDG, bought, sold and redeemed through Pendle's router with
    this instance's provider and signer, and posted behind an agent's line through the stock vault once it lists it. A
    trade with a signer is sent unless `send: false`; without one (or with `send: false`) it returns the calls, for
-   `account` (default: the signer's address). */
+   `account` (default: the signer's address). A step whose outcome is not known throws TX_UNCONFIRMED (sdk/pt-usdg.mjs):
+   check ptPosition before trading again. Its wait is bounded by this instance's waitTimeoutMs. */
 const ptTrade = (fn) => async function (amount, opts = {}) {
   const { send = true, account, ...rest } = opts;
   const wallet = send && this.signer ? this.signer : undefined;
   const who = account || (this.signer ? await this.signer.getAddress() : undefined);
-  return fn(this.provider, { ...rest, amount, account: who, wallet });
+  return fn(this.provider, { waitTimeoutMs: this._ifaces?.waitTimeoutMs, ...rest, amount, account: who, wallet });
 };
 extendPriorsV2({
   /** What a trade gives now: { side: "buy" | "sell" | "redeem", amount, slippageBps? } (sdk/pt-usdg.mjs ptQuote). */
