@@ -72,6 +72,8 @@ npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer i
 npx priors-v2 borrow 5 --days 7
 npx priors-v2 repay --all
 npx priors-v2 status
+npx priors-v2 move                       # treasury v4's line to treasury v5's, then the raise to $25
+npx priors-v2 raise                      # raises the treasury line to $25: treasury v5's (v4 raises nothing)
 npx priors-v2 tx                         # whether each recorded transaction is final, and whether it ran
 ```
 
@@ -93,38 +95,46 @@ else.
   needs `PRIORS_AGENT_ID`. `repay` pays only loans the agent's owner now took (GHSA-mmp8).
 - **Two seat vaults**: with `seatVaultV4` in the record, `join --seat` takes the staker's offer on the growth seat
   vault (V4) if there is one, else on V3, and `status` reads the seat on whichever vault sponsors the agent.
+- **The raise to $25** is treasury v5's (`treasuryV5` in the record). `move` refuses, with nothing sent, unless the
+  agent is on treasury v4's line (or v4 lined it once), has no loan open, its record meets v5's raise rules, its
+  InviteBond (v1) bond is at least 4 days old and v5 has room for a first line this epoch; then it sends only the
+  steps not done yet: `leave` (v4's line), the InviteBond (v1) bond back when one is posted, the owner's 5 USDG
+  `InviteBondV2` bond, the consent and `move`, the raise (left to the keeper if v5's raise budget for the epoch is
+  used up). Run it again after a failure: it goes on from the step that failed. `raise` raises a v5 line, and refuses
+  a v4 line while v4's rules hold raises, pointing at `move`.
 - **Exit codes**: 0 done (also when only the status shown after a write that went through could not be read; for `tx`:
   every recorded transaction final, or forgotten), 1 failed: the step that failed did nothing (refused before sending,
   reverted, or cancelled; a revert or cancel that mined stays recorded until `tx` shows it final; a node's refusal,
   "insufficient funds", counts only once the node shows no trace of the transaction); 2 usage or configuration (also
-  an untrusted record); 3 waiting (no seat offer yet; for `tx`: a recorded transaction not final yet; `borrow` or
-  `join` refused while one is unresolved; another command of this key running); 4 a transaction was sent and its
-  answer was lost (also a 429, a redirect or any other failed request: the broadcast is one request to one endpoint,
-  never retried, redirected or sent to another node; also a reply that is not exactly one JSON-RPC answer to it, or no
-  conclusive answer within the wait bound, `PRIORS_WAIT_SECONDS`), or it mined and its result could not be read, or
-  the node answered anything but a refusal ("nonce too low", "replacement transaction underpriced", "already
-  known"...) and does not show it (each can mean the transaction itself was taken) (GHSA-g5cv).
+  an untrusted record); 3 waiting (no seat offer yet; for `tx`: a recorded transaction not final yet; `borrow`,
+  `join`, `raise` or `move` refused while one is unresolved; another command of this key running); 4 a transaction
+  was sent and its answer was lost (also a 429, a redirect or any other failed request: the broadcast is one request
+  to one endpoint, never retried, redirected or sent to another node; also a reply that is not exactly one JSON-RPC
+  answer to it, or no conclusive answer within the wait bound, `PRIORS_WAIT_SECONDS`), or it mined and its result
+  could not be read, or the node answered anything but a refusal ("nonce too low", "replacement transaction
+  underpriced", "already known"...) and does not show it (each can mean the transaction itself was taken)
+  (GHSA-g5cv).
 - **Every write is recorded before it is sent**, one file per transaction (hash, nonce, the block before it was sent,
   the signed bytes) in `~/.local/state/priors/unconfirmed/` (`$XDG_STATE_HOME/priors/unconfirmed` if set; directory
   0700, files 0600, synced to disk, opened without following links, refused if anyone else can write them), so a
   command killed at any point leaves it behind: first as signed but not sent (before the lock check below), then as
   sending (right before its one broadcast). `tx` never sends one that was not sent, and drops it once the command that
-  signed it has stopped (or another command holds the lock). A record is kept, and `borrow` and `join` refused, while
-  its outcome is unknown or `tx`'s verdict on it is not finalized yet (a mined revert or a cancel included); a success
-  answered to the command itself (its receipt read) clears it at once, as does the node refusing the transaction.
-  `join`, `borrow`, `repay` and `tx` hold a lock per key (`<address>.lock` there): a second command of the same key
-  exits 3 while the first runs, and a lock left by a killed command is recovered (an owner is its pid and its
-  process's start time, so a pid reused by another process does not keep a lock, an unsent record or a claim alive).
-  Each write, once recorded, checks right before its broadcast that the lock is still its own; if not (two commands
-  can both take a lock while a stale one is recovered), it sends nothing, removes its unsent record and exits 3. A
-  sending record decides its own fate: whoever settles or resends it first claims it by renaming it (a resend holds it
-  as `<address>-<hash>.resending-…`, still sending to everyone else, also after a crash), and the other then sends
-  nothing and deletes nothing (exit 4).
+  signed it has stopped (or another command holds the lock). A record is kept, and `borrow`, `join`, `raise` and
+  `move` refused, while its outcome is unknown or `tx`'s verdict on it is not finalized yet (a mined revert or a
+  cancel included); a success answered to the command itself (its receipt read) clears it at once, as does the node
+  refusing the transaction. `join`, `borrow`, `repay`, `raise`, `move` and `tx` hold a lock per key
+  (`<address>.lock` there): a second command of the same key exits 3 while the first runs, and a lock left by a killed
+  command is recovered (an owner is its pid and its process's start time, so a pid reused by another process does not
+  keep a lock, an unsent record or a claim alive). Each write, once recorded, checks right before its broadcast that
+  the lock is still its own; if not (two commands can both take a lock while a stale one is recovered), it sends
+  nothing, removes its unsent record and exits 3. A sending record decides its own fate: whoever settles or resends it
+  first claims it by renaming it (a resend holds it as `<address>-<hash>.resending-…`, still sending to everyone else,
+  also after a crash), and the other then sends nothing and deletes nothing (exit 4).
 - **After exit 4** (or a killed command) the transaction may have landed or may still be pending, so `status` alone
-  settles nothing: a pending borrow shows no loan yet. While a record is unresolved, `borrow` and `join` refuse (exit
-  3); `repay` still runs (it cannot pay a loan twice, and a refused repay could miss a due date). `npx priors-v2 tx`
-  (no argument: a 64-hex argument is always refused as a key) settles every record of the key and removes each once
-  final:
+  settles nothing: a pending borrow shows no loan yet. While a record is unresolved, `borrow`, `join`, `raise` and
+  `move` refuse (exit 3); `repay` still runs (it cannot pay a loan twice, and a refused repay could miss a due date).
+  `npx priors-v2 tx` (no argument: a 64-hex argument is always refused as a key) settles every record of the key and
+  removes each once final:
   - mined: its receipt says status 1 (it ran, "Success" on `https://robinhoodchain.blockscout.com/tx/<hash>`), or the
     transaction at its nonce is a copy of the same call (same sender, target, data, value and chain) at another fee, a
     speed-up, whose receipt says status 1: it ran, never "safe to run again";

@@ -245,6 +245,8 @@ npx priors-v2 join [--invite <code> | --seat <staker>]   # identity, then a line
 npx priors-v2 borrow <amount> [--days N]
 npx priors-v2 repay [--all]
 npx priors-v2 status
+npx priors-v2 move                # an agent on a treasury v4 line: to treasury v5, then the raise to $25
+npx priors-v2 raise               # an agent on treasury v5's line: the raise to $25, once its record qualifies
 npx priors score <agentId>        # v1 CLI, still reads the paused v1 pool's history
 npx priors report <agentId>
 ```

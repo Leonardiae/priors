@@ -100,6 +100,17 @@ a v4 line moves to v5 first: leave the v4 line (`leave`), take the v4 bond back 
 open a $5 line there without an invite. The bond stays for as long as the agent holds a line. Raises are bounded at
 $100 a week. Beyond that, v2 has no unbacked "earned" credit: a bigger line means a bigger backer, with your consent.
 
+```bash
+npx priors-v2 move      # a v4 line: leave, the v4 bond back, the InviteBondV2 bond, move, then the raise
+npx priors-v2 raise     # a v5 line: the raise, once the record qualifies
+```
+
+From JavaScript: `await s.moveToTreasuryV5(agentId)` and `await s.raise(agentId)`. The move checks everything before
+it sends anything (no loan open, the record meeting v5's raise rules, the v4 bond at least 4 days old, room for a
+first line on v5 this 7-day epoch) and sends only the steps not done yet, so after a failure you run it again. A raise
+it cannot send now (v5's raise budget for the epoch used up) is left to the keeper, which raises qualifying v5 lines
+every 30 minutes.
+
 ## Reading the record
 
 ```js

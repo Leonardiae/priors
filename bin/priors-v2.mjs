@@ -8,6 +8,11 @@
 //   priors-v2 borrow <amount> [--days N]  borrow USDG (default 7 days) to the key's address
 //   priors-v2 repay [--all]               repay the oldest open loan, or every open loan
 //   priors-v2 status                      identity, sponsor, line, loans, balances
+//   priors-v2 raise                       raise the agent's treasury line to its second line (25 USDG): treasury v5's;
+//                                         treasury v4's only while its rules do not hold raises (they hold them today)
+//   priors-v2 move                        move the agent from treasury v4's line to treasury v5's, then raise it there
+//                                         (treasuryV5 in the v2 addresses): each step it has not done yet (leave,
+//                                         InviteBond v1 back, InviteBondV2 bond, move, raise)
 //   priors-v2 tx [--resend | --forget]    whether each recorded transaction is final, and whether it ran
 //
 // Environment (the key is never read from argv and never printed; .env is loaded like the v1 tools):
@@ -27,13 +32,14 @@
 // every recorded transaction final, or forgotten); 1 failed: the step that failed did nothing (refused before sending,
 // reverted, or cancelled); a revert or cancel that mined stays recorded until `priors-v2 tx` shows it final; 2 usage or
 // configuration error (also an untrusted record); 3 waiting: a seat offer that does not exist yet, a recorded
-// transaction not final yet (`tx`), `borrow` / `join` refused while one is unresolved, or another command of this key
-// running; 4 a transaction was sent and its answer was lost (also a 429, a redirect, a reply that is not exactly one
-// JSON-RPC answer to it, no conclusive answer within PRIORS_WAIT_SECONDS (3 minutes), or any other failed request: it
-// is never sent twice), or it mined and its result could not be read, or the node answered anything but a refusal
-// ("nonce too low", "replacement transaction underpriced", "already known"...) and does not show it (each can mean the
-// transaction itself was taken): it may have landed, or may still be pending, so `priors-v2 status` alone settles
-// nothing. A refusal ("insufficient funds") is exit 1 only once the node shows no trace of the transaction.
+// transaction not final yet (`tx`), `borrow` / `join` / `raise` / `move` refused while one is unresolved, or another
+// command of this key running; 4 a transaction was sent and its answer was lost (also a 429, a redirect, a reply that
+// is not exactly one JSON-RPC answer to it, no conclusive answer within PRIORS_WAIT_SECONDS (3 minutes), or any other
+// failed request: it is never sent twice), or it mined and its result could not be read, or the node answered anything
+// but a refusal ("nonce too low", "replacement transaction underpriced", "already known"...) and does not show it
+// (each can mean the transaction itself was taken): it may have landed, or may still be pending, so `priors-v2 status`
+// alone settles nothing. A refusal ("insufficient funds") is exit 1 only once the node shows no trace of the
+// transaction.
 // Every write is recorded before it is sent: its hash, nonce, send block and signed bytes, one file per transaction
 // (sdk/tx-record.mjs: ~/.local/state/priors/unconfirmed/, only the user can read them), synced to disk, so a command
 // killed at any point leaves it behind: first as signed but not sent (before the lock check), then as sending (right
@@ -41,10 +47,11 @@
 // was not sent, and drops it once the command that signed it has stopped. A sending record is claimed by rename by
 // whoever settles or resends it first (`tx --resend` holds it as `.resending-<pid>-<token>`, still sending to everyone
 // else, also after a crash); the other sends nothing and deletes nothing. The record goes once the receipt is read (or
-// the node refuses it); otherwise `borrow` and `join` refuse until it is settled (`repay` still runs: it cannot pay a
-// loan twice, and a refused repay could miss a due date). `join`, `borrow`, `repay` and `tx` hold this key's lock (one
-// at a time per key; a lock left by a killed command is recovered), and each write, once recorded, checks right before
-// its broadcast that it still holds it (if not: nothing sent, its record removed, exit 3). `priors-v2 tx` (or
+// the node refuses it); otherwise `borrow`, `join`, `raise` and `move` refuse until it is settled (`repay` still runs:
+// it cannot pay a loan twice, and a refused repay could miss a due date). `join`, `borrow`, `repay`, `raise`, `move`
+// and `tx` hold this key's lock (one at a time per key; a lock left by a killed command is recovered), and each write,
+// once recorded, checks right before its broadcast that it still holds it (if not: nothing sent, its record removed,
+// exit 3). `priors-v2 tx` (or
 // https://robinhoodchain.blockscout.com/tx/<hash>) settles each: mined (it ran: its own receipt, or that of a copy of
 // the same call at the same nonce, a speed-up), reverted, or replaced (a different call used its nonce); each is final
 // only once its block is finalized and canonical (until then: "waiting for finality"), and a record is removed once
@@ -68,6 +75,8 @@ const USAGE = `usage:
   priors-v2 borrow <amount> [--days N]
   priors-v2 repay [--all]
   priors-v2 status
+  priors-v2 raise
+  priors-v2 move
   priors-v2 tx [--resend | --forget]
 env: PRIORS_KEY [, PRIORS_RPC, PRIORS_ADDRESSES, PRIORS_AGENT_ID, PRIORS_EXPLORER_API, PRIORS_WAIT_SECONDS]
      addresses default to deployments/<chainId>.v2.json; the RPC to Robinhood Chain mainnet`;
@@ -303,6 +312,31 @@ async function repay(flags) {
   await statusAfter(sdk, addresses, id);
 }
 
+/** `priors-v2 raise`: the agent's treasury raise (sdk raise: treasury v5's line, or v4's while its rules allow
+ *  raises). */
+async function raiseCmd() {
+  const { sdk, wallet, addresses } = await config();
+  holdKey(wallet.address);
+  refuseWhileUnresolved(wallet.address, "raise");
+  const id = await needAgent(sdk, wallet.address, addresses);
+  const r = await sdk.raise(id);
+  console.log(`raised agent #${id} on ${r.treasury}${r.line != null ? `: its line is now ${usd(r.line)}` : ""}, tx ${r.hash}`);
+  await statusAfter(sdk, addresses, id);
+}
+
+/** `priors-v2 move`: treasury v4's line to treasury v5's, then the raise (sdk moveToTreasuryV5), each step once. */
+async function moveCmd() {
+  const { sdk, wallet, addresses } = await config();
+  if (!addresses.treasuryV5) throw new UsageError('the v2 addresses have no "treasuryV5": treasury v5 is not recorded in them, so there is nowhere to move to yet');
+  holdKey(wallet.address);
+  refuseWhileUnresolved(wallet.address, "move");
+  const id = await needAgent(sdk, wallet.address, addresses);
+  const r = await sdk.moveToTreasuryV5(id);
+  for (const s of r.steps) console.log(`  ${s.step}: ${s.hash ? `tx ${s.hash}` : `skipped (${s.skipped})`}`);
+  console.log(`agent #${id} is on treasury v5's line${r.line != null ? `, now ${usd(r.line)}` : ""}`);
+  await statusAfter(sdk, addresses, id);
+}
+
 async function status() {
   const { sdk, wallet, addresses } = await config();
   const id = await findAgent(sdk, wallet.address, addresses);
@@ -323,7 +357,8 @@ function unresolvedOf(address) {
   }
 }
 
-/** borrow and join refuse while a transaction of this key is unresolved: running them again could repeat it. */
+/** borrow, join, raise and move refuse while a transaction of this key is unresolved: running them again could repeat
+ *  it. */
 function refuseWhileUnresolved(address, cmd) {
   const open = unresolvedOf(address);
   if (!open.length) return;
@@ -488,7 +523,7 @@ async function main() {
   if (flags.help || !cmd) { console.log(USAGE); return; }
   // each command's own arguments and options, checked before anything runs: a word or an option a command does not
   // take is refused, never dropped (`priors-v2 repay 42` would otherwise repay the loan due first, not #42)
-  const TAKES = { join: { pos: 0, opts: ["invite", "seat", "uri"] }, borrow: { pos: 1, opts: ["days"] }, repay: { pos: 0, opts: ["all"] }, status: { pos: 0, opts: [] }, tx: { pos: 0, opts: ["resend", "forget"] } };
+  const TAKES = { join: { pos: 0, opts: ["invite", "seat", "uri"] }, borrow: { pos: 1, opts: ["days"] }, repay: { pos: 0, opts: ["all"] }, status: { pos: 0, opts: [] }, raise: { pos: 0, opts: [] }, move: { pos: 0, opts: [] }, tx: { pos: 0, opts: ["resend", "forget"] } };
   const takes = TAKES[cmd];
   if (takes) {
     const extra = Object.keys(flags).find((k) => !takes.opts.includes(k));
@@ -500,6 +535,8 @@ async function main() {
   if (cmd === "borrow") return borrow(pos, flags);
   if (cmd === "repay") return repay(flags);
   if (cmd === "status") return status();
+  if (cmd === "raise") return raiseCmd();
+  if (cmd === "move") return moveCmd();
   if (cmd === "tx") return txCmd(pos, flags);
   throw new UsageError(`unknown command "${cmd}"`);
 }
@@ -545,8 +582,8 @@ main().then(
     }
     let kept = "";
     try {
-      const n = keyAddress && ["join", "borrow", "repay"].includes(ran) ? listUnconfirmed(keyAddress).length : 0;
-      if (n) kept = `\npriors-v2: ${n} transaction(s) of this key stay recorded until \`priors-v2 tx\` shows them final (a mined revert or a cancel is final once its block is finalized); \`borrow\` and \`join\` refuse until then`;
+      const n = keyAddress && ["join", "borrow", "repay", "raise", "move"].includes(ran) ? listUnconfirmed(keyAddress).length : 0;
+      if (n) kept = `\npriors-v2: ${n} transaction(s) of this key stay recorded until \`priors-v2 tx\` shows them final (a mined revert or a cancel is final once its block is finalized); \`borrow\`, \`join\`, \`raise\` and \`move\` refuse until then`;
     } catch (_) { /* the note is optional */ }
     console.error(`priors-v2: ${scrub(e.shortMessage || e.message || e)}${kept}`);
     process.exit(1);

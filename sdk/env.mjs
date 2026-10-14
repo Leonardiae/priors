@@ -365,7 +365,7 @@ export async function resolveV2(opts = {}) {
   // deployBlock too: the identity search starts there, and an earlier one finds identities it should not (GHSA-95v6).
   if (!opts.addressesFile && file && chainId !== DEV_CHAIN && !optedIn("PRIORS_ALLOW_CUSTOM_ADDRESSES")) {
     const pinned = readDeploymentV2(chainId);
-    const keys = ["pool", "usdg", "registry", "priors", "lens", "treasuryV4", "seatVault", "seatVaultV4", "seatVaultV5", "stockVault", "inviteBond", "deployBlock"];
+    const keys = ["pool", "usdg", "registry", "priors", "lens", "treasuryV4", "seatVault", "seatVaultV4", "seatVaultV5", "stockVault", "inviteBond", "treasuryV5", "inviteBondV2", "deployBlock"];
     const differ = pinned ? keys.filter((k) => addresses[k] !== undefined && pinned[k] !== undefined && String(addresses[k]).toLowerCase() !== String(pinned[k]).toLowerCase()) : ["no published deployment for this chain"];
     if (differ.length) {
       const where = chainId === 4663 ? "Robinhood Chain" : `chain ${chainId}`;

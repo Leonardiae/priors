@@ -15,6 +15,9 @@
 //            await p.acceptSeat(agentId, staker)                                  // a staker's seat offer
 //            const { loanId } = await p.borrow(agentId, 5, 7 * 86400)             // $5 for 7 days
 //            await p.repay(loanId, { agentId }); await p.openLoans(agentId); await p.status(agentId)
+//   raise    await p.raise(agentId)                    // its treasury's raise to the second line (25 USDG)
+//            await p.moveToTreasuryV5(agentId)         // treasury v4's line -> treasury v5's, then the raise
+//            (both with addresses.treasuryV5: docs/AGENTS.md, "3. Grow")
 //   stocks   (addresses.stockVault) await p.stockAssets(); await p.stockPosition(agentId)
 //            await p.openStockLine(agentId, token, "0.05")                        // deposit and open the line
 //            await p.addCollateral(agentId, "0.01"); await p.closeStockLine(agentId)
@@ -163,6 +166,9 @@ export const TREASURY_V4_ABI = [
   "function raise(uint256 id)",
   "function eligibleForRaise(uint256 id) view returns (bool)",
   "function rules() view returns (uint256 reserveBps, uint256 firstLine, uint256 secondLine, uint256 epochCap, uint64 epochLength, uint64 minSeasoning, uint256 minQualified, uint256 minScore, uint64 idleAfter)",
+  "function score(uint256 id) view returns (uint256)",
+  "function seeded(uint256) view returns (bool)",
+  "event Raised(uint256 indexed agentId, uint256 added, uint256 lineNow)",
   "error NotAdopted()", "error AlreadyAdopted()", "error NotOurs(uint256 agentId)", "error AlreadyLined(uint256 agentId)",
   "error NotEligible(uint256 agentId)", "error OwnerDefaulted(address owner)", "error EpochCapReached(uint256 wanted, uint256 left)",
   "error NotInvited(uint256 agentId, address signer)", "error InviteExpired(uint256 agentId, uint64 expiry)",
@@ -171,6 +177,81 @@ export const TREASURY_V4_ABI = [
   // OpenZeppelin ECDSA, reached from firstLine when the invite is not a signature at all
   "error ECDSAInvalidSignature()", "error ECDSAInvalidSignatureLength(uint256 length)", "error ECDSAInvalidSignatureS(bytes32 s)",
 ];
+
+/** TreasurySponsorV5 (src/TreasurySponsorV5.sol): where an agent treasury v4 lined moves for its raise to the second
+ *  line (docs/AGENTS.md, "3. Grow"). It names no inviter: its first lines are moves. */
+export const TREASURY_V5_ABI = [
+  `function move(uint256 id, ${CONSENT_T} c, bytes consentSig)`,
+  "function raise(uint256 id)",
+  "function eligibleForRaise(uint256 id) view returns (bool)",
+  "function score(uint256 id) view returns (uint256)",
+  "function rules() view returns (uint256 reserveBps, uint256 firstLine, uint256 secondLine, uint256 epochCap, uint64 epochLength, uint64 minSeasoning, uint256 minQualified, uint256 minScore, uint64 idleAfter)",
+  "function agentId() view returns (uint256)",
+  "function firstLined(uint256) view returns (bool)",
+  "function seeded(uint256) view returns (bool)",
+  "function epochRoom() view returns (uint256)",
+  "function raiseRoom() view returns (uint256)",
+  "function bond() view returns (address)",
+  "function legacyBond() view returns (address)",
+  "function previous() view returns (address)",
+  "event Moved(uint256 indexed agentId, address indexed owner)",
+  "event FirstLine(uint256 indexed agentId, uint256 amount, address indexed caller)",
+  "event Raised(uint256 indexed agentId, uint256 added, uint256 lineNow)",
+  "error NotAdopted()", "error NotEligible(uint256 agentId)", "error NotMovable(uint256 agentId)", "error OwnerDefaulted(address owner)",
+  "error EpochCapReached(uint256 wanted, uint256 left)", "error RaiseCapReached(uint256 wanted, uint256 left)",
+  "error AlreadyLined(uint256 agentId)", "error LoanOpen(uint256 agentId)",
+];
+
+/** InviteBond (v1, src/InviteBond.sol) and InviteBondV2 (src/InviteBondV2.sol), the calls the move makes on them.
+ *  bonds() is read as its first three words, which both return (v1 has a fourth, qualifiedAt; V2 has none). */
+export const INVITE_BOND_ABI = [
+  "function bonds(uint256) view returns ((address depositor, uint64 at, uint256 amount))",
+  "function isBonded(uint256) view returns (bool)",
+  "function releasable(uint256) view returns (bool)",
+  "function unusedReleaseAt(uint256) view returns (uint256)",
+  "function amount() view returns (uint256)",
+  "function deposit(uint256 agentId)",
+  "function release(uint256 agentId)",
+  "error AlreadyBonded(uint256 agentId)", "error NotOwner(uint256 agentId)", "error AgentDefaulted(uint256 agentId)",
+  "error LoanOpen(uint256 agentId)", "error NoBond(uint256 agentId)", "error NotReleasable(uint256 agentId)",
+  "error NotTreasuryLine(uint256 agentId)", // InviteBondV2: a deposit only with no sponsor or on treasury v5's line
+];
+
+/** The move's refusals on chain, in plain words (moveToTreasuryV5 puts them before the revert it names). */
+const MOVE_WORDS = {
+  LoanOpen: "the agent has a loan open: repay your open loan first",
+  NotTreasuryLine: "InviteBondV2 takes a bond only for an agent with no line, or on treasury v5's: leave treasury v4's line first",
+  NotMovable: "treasury v5 moves only an agent treasury v4 lined and v5 never did, on v4's line or none, with no InviteBond (v1) bond left and the owner's own InviteBondV2 bond posted",
+  NotReleasable: "the InviteBond (v1) bond comes back only with the line closed, no loan open, from 4 days after it was posted",
+};
+
+/** The bar of qualified loans above which a treasury's rules hold raises: the Safe's setting of 2026-10-12 (H1 in
+ *  docs/SECURITY-v2.md: treasury v4's minQualified 1,000,000), which returns an InviteBond (v1) bond only once its line
+ *  is closed. */
+export const RAISE_HOLD_BAR = 100n;
+
+/** Pure: whether a treasury's rules() hold raises: secondLine at or under firstLine (no line is ever under its first
+ *  line), or minQualified above RAISE_HOLD_BAR. */
+export const raisesHeld = (r) => BigInt(r.secondLine) <= BigInt(r.firstLine) || BigInt(r.minQualified) > RAISE_HOLD_BAR;
+
+const utcAt = (t) => new Date(Number(t) * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+
+/**
+ * Pure: what an agent's record (`agent`, the pool's getAgent) still lacks for a raise under a treasury's `rules` (its
+ * rules()), with the treasury's `score` for it, at chain time `now`: plain phrases, none when the record meets them.
+ * The record's part of eligibleForRaise only: the line itself (its sponsor, frozen, already raised) is the caller's.
+ */
+export function raiseShortfall({ agent, rules, score, now }) {
+  const out = [];
+  if (agent.defaulted) out.push("a record with no default (it has defaulted)");
+  if (BigInt(agent.childrenDefaulted) !== 0n) out.push("no default among the agents it backs");
+  const q = BigInt(agent.qualifiedRepaid), need = BigInt(rules.minQualified);
+  if (q < need) out.push(`${need} qualified loans repaid (it has ${q})`);
+  const ready = BigInt(agent.enrolledAt) + BigInt(rules.minSeasoning);
+  if (BigInt(agent.enrolledAt) === 0n || BigInt(now) < ready) out.push(`${Number(rules.minSeasoning) / 86400} days since it enrolled${BigInt(agent.enrolledAt) === 0n ? " (it is not enrolled)" : ` (from ${utcAt(ready)})`}`);
+  if (BigInt(score) < BigInt(rules.minScore)) out.push(`a score of ${rules.minScore} (it has ${score})`);
+  return out;
+}
 
 const ERC20_ABI = [
   "function approve(address,uint256) returns (bool)",
@@ -578,10 +659,12 @@ export class PriorsV2 {
   /**
    * @param {{ signer?: any, provider?: any, rpc?: string,
    *           addresses: { pool: string, treasuryV4?: string, seatVault?: string, seatVaultV4?: string, usdg?: string, registry?: string, priors?: string, stockVault?: string,
-   *                        seatVaultV5?: string, seatVaultV5AgentId?: number } }} opts
+   *                        seatVaultV5?: string, seatVaultV5AgentId?: number, treasuryV5?: string, inviteBondV2?: string } }} opts
    * With `seatVaultV4` (the growth seat vault), new seats go to it; a seat already open stays on its own vault.
    * With `seatVaultV5` and `seatVaultV5AgentId` (SeatVaultV5 and its root), `borrow` and `pay` on a line V5 sponsors take
    * its step first (float.mjs `v5BeforeBorrow`).
+   * With `treasuryV5` (TreasurySponsorV5), `raise` and `moveToTreasuryV5` reach it; its bond and treasury v4's are read
+   * from it (bond(), legacyBond(), previous()), and a recorded `inviteBondV2` must be its bond().
    * `waitTimeoutMs` (default 180000): a wall-clock bound on a write from its broadcast to its conclusive answer (the
    * broadcast, the hash lookups, the receipt and replacement wait, reading its result); past it, TX_UNCONFIRMED.
    * `journal: { before({ name, hash, nonce, raw, sentBlock }), settled(hash) }` (optional, a key held here): every
@@ -606,8 +689,11 @@ export class PriorsV2 {
     this.registry = a.registry ? new ethers.Contract(a.registry, REGISTRY_ABI, run) : null;
     this.stockVault = a.stockVault ? new ethers.Contract(a.stockVault, STOCK_VAULT_ABI, run) : null;
     this.vaultV5 = a.seatVaultV5 ? new ethers.Contract(a.seatVaultV5, SEAT_VAULT_V5_ABI, run) : null;
+    // treasury v5 (raise, moveToTreasuryV5): only once the record names it; its bonds are read from it (_treasuryV5)
+    this.treasuryV5 = a.treasuryV5 ? new ethers.Contract(a.treasuryV5, TREASURY_V5_ABI, run) : null;
     // every interface a call here can revert with: a vault or treasury call bubbles the pool's errors up
-    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), ...(this.vaultV5 ? [this.vaultV5.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI)];
+    this._ifaces = [this.pool.interface, ...(this.vault ? [this.vault.interface] : []), ...(this.vaultV4 ? [this.vaultV4.interface] : []), ...(this.treasury ? [this.treasury.interface] : []), ...(this.stockVault ? [this.stockVault.interface] : []), ...(this.vaultV5 ? [this.vaultV5.interface] : []), new ethers.Interface(ERC20_ABI), new ethers.Interface(REGISTRY_ABI),
+      ...(this.treasuryV5 ? [this.treasuryV5.interface, new ethers.Interface(INVITE_BOND_ABI)] : [])];
     this._ifaces.journal = opts.journal || null; // sendChecked reads it with the interfaces every write passes
     this._ifaces.waitTimeoutMs = opts.waitTimeoutMs ?? 180_000; // how long a sent write waits for its receipt
     this.toUnits = toUnits;
@@ -894,6 +980,187 @@ export class PriorsV2 {
     return { hash: rc.hash, sponsorId: Number(sponsorId), seatVault: at };
   }
 
+  // ---- the raise to the second line: treasury v5 (docs/AGENTS.md, "3. Grow") ---------------------------------------
+
+  /**
+   * Treasury v5 as the move and the raise read it, once per instance: its root, treasury v4 (its `previous()`) and v4's
+   * root, InviteBondV2 (its `bond()`) and InviteBond v1 (its `legacyBond()`; the record's `inviteBond` where v5 cannot
+   * say). A recorded `inviteBondV2` that is not v5's bond() is refused: a deposit there would not count.
+   */
+  async _treasuryV5() {
+    const t5 = this._need(this.treasuryV5, "treasuryV5");
+    if (this._t5) return this._t5;
+    const run = this.signer || this.provider;
+    const [root, bondAt, prevAt] = await Promise.all([t5.agentId(), t5.bond(), t5.previous()]);
+    let legacyAt;
+    try { legacyAt = await t5.legacyBond(); } catch (_) { legacyAt = this.addresses.inviteBond || ethers.ZeroAddress; }
+    if (this.addresses.inviteBondV2 && !sameAddr(this.addresses.inviteBondV2, bondAt)) throw new Error(`the addresses file's inviteBondV2 (${this.addresses.inviteBondV2}) is not treasury v5's bond (${bondAt}): fix the addresses file; nothing was sent`);
+    const t4 = this.treasury && sameAddr(await this.treasury.getAddress(), prevAt) ? this.treasury : new ethers.Contract(prevAt, TREASURY_V4_ABI, run);
+    this._t5 = {
+      t5, root: BigInt(root), t4, v4Root: BigInt(await t4.agentId()),
+      bondV2: new ethers.Contract(bondAt, INVITE_BOND_ABI, run),
+      bondV1: legacyAt && legacyAt !== ethers.ZeroAddress ? new ethers.Contract(legacyAt, INVITE_BOND_ABI, run) : null,
+    };
+    return this._t5;
+  }
+
+  /**
+   * Raise `agentId`'s treasury line to its treasury's second line (rules().secondLine: 25 USDG), by its sponsor: on
+   * treasury v5's line (`treasuryV5` recorded), v5's raise; on treasury v4's, v4's, refused with nothing sent while v4's
+   * rules hold raises (raisesHeld: its minQualified of 1,000,000 since 2026-10-12), saying that moveToTreasuryV5 is the
+   * way to the second line. An agent the treasury does not find eligible is refused with what its record lacks
+   * (raiseShortfall), nothing sent. Anyone may send a raise, for any agent; the keeper raises eligible v5 lines every 30
+   * minutes. Returns { hash, treasury: "treasury v5" | "treasury v4", added, line } (added and line from its Raised
+   * event, null if the receipt has none).
+   */
+  async raise(agentId) {
+    this._needSigner();
+    const id = BigInt(agentId);
+    const a = await this.pool.getAgent(id);
+    if (this.treasuryV5 && a.sponsor !== 0n) {
+      const t = await this._treasuryV5();
+      if (t.root !== 0n && a.sponsor === t.root) return this._raiseOn(t.t5, "treasury v5", id, a);
+    }
+    if (this.treasury && a.sponsor !== 0n && a.sponsor === (await this.treasury.agentId())) {
+      const r = await this.treasury.rules();
+      if (raisesHeld(r)) {
+        const why = BigInt(r.secondLine) <= BigInt(r.firstLine) ? `its second line (${fmtUsdg(r.secondLine)} USDG) is no bigger than its first` : `its bar of ${r.minQualified} qualified loans holds them`;
+        throw new Error(`agent #${id}'s line is treasury v4's, whose raises are on hold (${why}): nothing was sent. ${this.treasuryV5 ? "Treasury v5 raises it: moveToTreasuryV5 (`priors-v2 move`) moves the line there, then raises it." : "Treasury v5, which raises it, is not in this addresses file."}`);
+      }
+      return this._raiseOn(this.treasury, "treasury v4", id, a);
+    }
+    throw new Error(`agent #${id} is not on a treasury line (${a.sponsor === 0n ? "it has no sponsor" : `its sponsor is #${a.sponsor}`}): only a treasury line is raised by rule; nothing was sent`);
+  }
+
+  /** The raise on treasury `t` (named `which`) of agent `id` (its pool record `a`), once eligibleForRaise says yes. */
+  async _raiseOn(t, which, id, a) {
+    if (!(await t.eligibleForRaise(id))) throw new Error(`agent #${id} is not eligible for a raise on ${which} yet: ${(await this._raiseWhyNot(t, id, a)).join("; ")}. Nothing was sent`);
+    const at = (await t.getAddress()).toLowerCase();
+    return sendChecked(t, "raise", [id], this._ifaces, (rc) => {
+      const ev = rc.logs.filter((l) => l.address.toLowerCase() === at).map((l) => { try { return t.interface.parseLog(l); } catch (_) { return null; } }).find((x) => x && x.name === "Raised");
+      return { hash: rc.hash, treasury: which, added: ev ? ev.args.added : null, line: ev ? ev.args.lineNow : null };
+    });
+  }
+
+  /** Why treasury `t` would not raise agent `id` now, in plain phrases (its line, its owner, then its record). Treasury
+   *  v5 also reads treasury v4's seeded flag (eligibleForRaise does). */
+  async _raiseWhyNot(t, id, a) {
+    const v4Seeded = this.treasuryV5 && t === this.treasuryV5 ? (await this._treasuryV5()).t4.seeded(id) : false;
+    const [r, score, seeded, block, owner] = await Promise.all([t.rules(), t.score(id), Promise.all([t.seeded(id), v4Seeded]).then(([x, y]) => x || y), this.provider.getBlock("latest"), (await this._registry()).ownerOf(id).catch(() => null)]);
+    const out = [];
+    if (seeded) out.push("its record was seeded by the protocol, and a seeded record is never raised by rule");
+    if (a.frozen) out.push("its line is frozen");
+    if (a.delegatedIn === 0n) out.push("its line is closed");
+    else if (a.delegatedIn >= r.secondLine) out.push(`its line is already ${fmtUsdg(a.delegatedIn)} USDG`);
+    if (owner && (await this.pool.ownerDefaults(owner)) !== 0n && !(await this.pool.custodian(owner))) out.push("its owner's wallet was marked by a default");
+    const need = raiseShortfall({ agent: a, rules: r, score, now: block.timestamp });
+    if (need.length) out.push(`the raise needs ${need.join(", ")}`);
+    return out.length ? out : ["the treasury does not say why"];
+  }
+
+  /**
+   * Move `agentId`, an agent the signer owns that treasury v4 lined, to treasury v5, then raise it to v5's second line
+   * (docs/AGENTS.md, "3. Grow": v4 raises nothing; v5 is where a seasoned agent is raised). Refused with nothing sent
+   * unless all of these hold: v5 recorded, with its root; the agent on v4's line, or with no sponsor and lined by v4
+   * once; never lined by v5; no loan open; not defaulted; its owner not marked by a default; its record not seeded; the
+   * record meeting v5's raise rules (raiseShortfall: qualified loans, seasoning, score); room for a first line on v5
+   * this epoch and the free backing for it; its InviteBond (v1) bond, if any, releasable once the line is closed (from
+   * 4 days after it was posted: v5's move waits until it is gone); the owner's USDG for the InviteBondV2 bond. Then, each
+   * step skipped when it is already done:
+   *   1. pool.leave(id) while the agent is on v4's line: InviteBondV2 takes a deposit only with no line (or on v5's),
+   *      and a v1 bond comes back only with the line closed
+   *   2. InviteBond(v1).release(id), when one is posted: the bond goes back to its depositor
+   *   3. USDG approve, then InviteBondV2.deposit(id) by the owner (a bond another wallet posted is replaced and refunded)
+   *   4. the owner's pool consent naming v5's root, and V5.move(id, consent, sig)
+   *   5. V5.raise(id). Not fatal when it cannot go now (the raise budget of the epoch, say): the keeper raises eligible
+   *      v5 lines every 30 minutes
+   * Run it again after a failure and it goes on from the step that failed. Returns { agentId, steps: [{ step, hash } |
+   * { step, skipped }], line } (line: the agent's line after it, null if unread). A step that fails throws its own error
+   * with `step` and `steps` (those done) on it, a refusal on chain put in plain words first (MOVE_WORDS: LoanOpen,
+   * NotTreasuryLine, NotMovable, NotReleasable); a write whose answer was lost stays TX_UNCONFIRMED (see sendChecked).
+   */
+  async moveToTreasuryV5(agentId, { deadline } = {}) {
+    const me = await this.me();
+    const id = BigInt(agentId);
+    const t = await this._treasuryV5();
+    const no = (why) => new Error(`agent #${id} cannot move to treasury v5: ${why}. Nothing was sent`);
+    if (t.root === 0n) throw no("treasury v5 has no root yet (it is still being set up)");
+    const owner = await (await this._registry()).ownerOf(id);
+    if (!sameAddr(owner, me)) throw no(`it is owned by ${owner}, not by the signer ${me}: only its owner can move it`);
+    const a = await this.pool.getAgent(id);
+    const steps = [];
+    if (a.sponsor === t.root) {
+      for (const step of ["leave", "release v1 bond", "bond on InviteBondV2", "move"]) steps.push({ step, skipped: "already on treasury v5's line" });
+    } else {
+      // ---- every check before the first write ----
+      if (a.defaulted) throw no("it has defaulted");
+      if (await t.t5.firstLined(id)) throw no("treasury v5 lined it before, and an agent moves once");
+      const onV4 = a.sponsor === t.v4Root;
+      if (!onV4 && a.sponsor !== 0n) throw no(`its line is #${a.sponsor}'s, not treasury v4's`);
+      if (!onV4 && !(await t.t4.firstLined(id))) throw no("treasury v4 never lined it (the move is for agents with a treasury v4 line)");
+      if (a.activeLoans !== 0n) throw no("it has a loan open: repay your open loan first");
+      if ((await this.pool.ownerDefaults(owner)) !== 0n && !(await this.pool.custodian(owner))) throw no("its owner's wallet was marked by a default");
+      if ((await t.t4.seeded(id)) || (await t.t5.seeded(id))) throw no("its record was seeded by the protocol, and treasury v5 never raises a seeded record by rule");
+      const [r, score, room, free, block] = await Promise.all([t.t5.rules(), t.t5.score(id), t.t5.epochRoom(), this.pool.freeBacking(t.root), this.provider.getBlock("latest")]);
+      const now = BigInt(block.timestamp);
+      const need = raiseShortfall({ agent: a, rules: r, score, now });
+      if (need.length) throw no(`not yet: the raise on treasury v5 needs ${need.join(", ")}`);
+      if (room < r.firstLine) throw no(`treasury v5's first lines for this epoch are used up (${fmtUsdg(room)} USDG of room left): try again next epoch`);
+      if (free < r.firstLine) throw no(`treasury v5's free backing (${fmtUsdg(free)} USDG) does not cover a first line now: try again later`);
+      const v1 = t.bondV1 ? (await t.bondV1.bonds(id)).depositor : ethers.ZeroAddress;
+      const v1Bonded = v1 !== ethers.ZeroAddress;
+      if (v1Bonded) {
+        const back = await t.bondV1.unusedReleaseAt(id);
+        if (back > now) throw no(`its InviteBond (v1) bond comes back only from ${utcAt(back)} (4 days after it was posted), and treasury v5 moves an agent only once that bond is gone: run this again from then`);
+      }
+      const v2 = (await t.bondV2.bonds(id)).depositor;
+      const bondAmount = sameAddr(v2, me) ? 0n : await t.bondV2.amount();
+      const usdg = await this._usdg();
+      if (bondAmount > 0n && (await usdg.balanceOf(me)) < bondAmount) throw no(`the InviteBondV2 bond takes ${fmtUsdg(bondAmount)} USDG from ${me}, which holds ${fmtUsdg(await usdg.balanceOf(me))}`);
+
+      // ---- the steps ----
+      const step = async (name, fn) => {
+        try {
+          const rc = await fn();
+          steps.push({ step: name, hash: rc.hash });
+        } catch (e) {
+          const words = MOVE_WORDS[(/would revert: (\w+)\(/.exec(String(e?.message)) || [])[1]];
+          try { e.step = name; e.steps = steps; e.message = `${name}: ${words ? `${words} (${e.message})` : e.message}${steps.length ? ` (done before it: ${steps.filter((s) => s.hash).map((s) => s.step).join(", ") || "nothing"}; run the move again to go on)` : ""}`; } catch (_) { /* a frozen error keeps its own words */ }
+          throw e;
+        }
+      };
+      if (onV4) await step("leave", () => sendChecked(this.pool, "leave", [id], this._ifaces));
+      else steps.push({ step: "leave", skipped: "not on treasury v4's line" });
+      if (v1Bonded) await step("release v1 bond", () => sendChecked(t.bondV1, "release", [id], this._ifaces));
+      else steps.push({ step: "release v1 bond", skipped: "no InviteBond (v1) bond" });
+      if (bondAmount > 0n) {
+        await step("bond on InviteBondV2", async () => {
+          await this._ensure(usdg, await t.bondV2.getAddress(), bondAmount, "the InviteBondV2 bond");
+          return sendChecked(t.bondV2, "deposit", [id], this._ifaces);
+        });
+      } else steps.push({ step: "bond on InviteBondV2", skipped: "the owner's InviteBondV2 bond is posted" });
+      await step("move", async () => {
+        const { consent, sig } = await this.signConsent({ agentId: id, sponsorId: t.root, maxPremiumBps: 0, deadline });
+        return sendChecked(t.t5, "move", [id, consentTuple(consent), sig], this._ifaces);
+      });
+    }
+    // ---- 5. the raise: not fatal (the keeper raises eligible v5 lines every 30 minutes), unless its answer was lost ----
+    try {
+      if (await t.t5.eligibleForRaise(id)) {
+        const r = await sendChecked(t.t5, "raise", [id], this._ifaces);
+        steps.push({ step: "raise", hash: r.hash });
+      } else {
+        steps.push({ step: "raise", skipped: `not eligible yet: ${(await this._raiseWhyNot(t.t5, id, await this.pool.getAgent(id))).join("; ")}` });
+      }
+    } catch (e) {
+      if (e?.code === "TX_UNCONFIRMED") { try { e.step = "raise"; e.steps = steps; } catch (_) { /* as it is */ } throw e; }
+      steps.push({ step: "raise", skipped: `${String(e?.shortMessage || e?.message || e).split("\n")[0]}; the keeper raises it within about 30 minutes once it can` });
+    }
+    let line = null;
+    try { line = (await this.pool.getAgent(id)).delegatedIn; } catch (_) { /* the steps are done; the line is read again later */ }
+    return { agentId: Number(id), steps, line };
+  }
+
   /** The fee for `amount` over `termSeconds` for this agent (its sponsor's premium included), from the pool. */
   async quoteFee(agentId, amount, termSeconds) {
     const q = await this.pool.quoteFee(agentId, toUnits(amount), BigInt(termSeconds));
@@ -1061,11 +1328,11 @@ export class PriorsV2 {
     const owner = await reg.ownerOf(agentId).catch(() => null);
     const a = await this.pool.getAgent(agentId);
     const vs = this._vaults();
-    const [tRoot, vRoots, sRoot] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, Promise.all(vs.map((v) => v.agentId())), this.stockVault ? this.stockVault.agentId() : 0n]);
+    const [tRoot, vRoots, sRoot, t5Root] = await Promise.all([this.treasury ? this.treasury.agentId() : 0n, Promise.all(vs.map((v) => v.agentId())), this.stockVault ? this.stockVault.agentId() : 0n, this.treasuryV5 ? this.treasuryV5.agentId() : 0n]);
     const sponsor = a.sponsor;
     const onStock = sponsor !== 0n && sponsor === sRoot;
     const onSeat = sponsor !== 0n && vRoots.includes(sponsor);
-    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : onSeat ? "seat vault" : onStock ? "stock vault" : "backer";
+    const sponsorKind = sponsor === 0n ? "none" : sponsor === tRoot ? "treasury v4" : sponsor === t5Root ? "treasury v5" : onSeat ? "seat vault" : onStock ? "stock vault" : "backer";
     // the seat vault that sponsors it, else the one holding an open seat for it, else where new seats go
     const seatVault = vs.length ? (onSeat ? vs[vRoots.indexOf(sponsor)] : await this._seatVaultOf(agentId)) : null;
     const collateral = onStock ? collateralOf(await readStockPosition(this.stockVault, agentId)) : null;
