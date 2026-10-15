@@ -272,7 +272,7 @@ Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE
 allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
 back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
 `NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3). The
-bridge (below) adds its own codes. The credit helpers add
+bridge and `payViaGateway` (below) add their own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
 
@@ -422,6 +422,41 @@ await returnToRobinhood({ signer, amount: 1_000_000n, baseProvider: base }); // 
   or Across refunds it on Robinhood Chain after its fill deadline), `BRIDGE_REFUNDED`, `RETURN_PENDING` and
   `RETURN_FAILED` (the authorization is out until it expires). Never send a transfer again while one may be out.
 
+## Sellers through the Vantis gateway (`payViaGateway`)
+
+Since 0.8.0. Off unless you ask for it. Vantis' Keyring gateway
+(https://keyring.vantis.sh/gateway) sells calls to the x402 services in its catalog, most of them paid in USDC on Base,
+for one USDG price on Robinhood Chain. Keyring pays the seller itself and relays the answer. A payer with a `gateway`
+buys through it with its usual USDG payment, so the agent's Priors line can cover a Base seller with no Base float.
+
+```js
+const payer = createPayer({ signer, pool: robinhood.pool, agentId: 1234, maxBorrow: "$5", maxPrice: "$0.10",
+  gateway: {} });                                 // {} = https://keyring.vantis.sh, maxFeeBps 1000
+const r = await payer.payViaGateway({ resource: "https://stableenrich.dev/api/exa/search", method: "POST", input: { query: "x402" } });
+// or { serviceId: "svc_81fe57c734", input }; r.gateway = { serviceId, resource, method, network, listed, quoted }
+```
+
+Before anything is signed or borrowed:
+
+- **The seller's record** is read from Keyring. It must name the `resource` (and `method`) you asked for. Keyring's
+  `suspicious` and `testnet` flags, and a record with no listed price, are refused.
+- **Keyring's quote** must come from an armed gateway for an available seller, in USDG on Robinhood Chain. It must be
+  at most `maxPrice` and at most `maxFeeBps` over the seller's own listed price.
+- **The 402** of `POST /x402/run` must ask no more than the quote, in USDG on Robinhood Chain only (never Base, even
+  with `networks` naming Base). With `gateway.payTo` set, it must pay that address.
+
+Then it is paid as `pay()` pays any Robinhood Chain merchant: from the balance, then `topUp`, then a loan of only the
+shortfall within `maxBorrow`, with one signature. `gateway.url` must be https.
+
+Not yet seen live: the 402's exact shape (v2 or v1; the payer pays either), Keyring's `payTo`, and how `input` maps
+onto each seller's request. Make one small live call before relying on it, then pin `gateway.payTo`. Codes:
+
+- `GATEWAY_OFF`, `BAD_GATEWAY`, `BAD_GATEWAY_SERVICE`;
+- `GATEWAY_NO_SERVICE`, `GATEWAY_REFUSED`, `GATEWAY_UNAVAILABLE`;
+- `GATEWAY_FEE_TOO_HIGH`, `GATEWAY_PRICE_ABOVE_QUOTE`, `GATEWAY_PAYTO_MISMATCH`.
+
+Which route to use when, and Dexter as a merchant's facilitator: `docs/X402-ROUTES.md` in the repository.
+
 ## Tests
 
 `npm run test:packages` in the Priors repository: unit tests with mocks, and, with `RPC_URL` set, an anvil fork of
@@ -430,4 +465,5 @@ chain 4663 where a standard `@x402/express` server priced with `registerUsdg` is
 `@x402/express`), Hono and a fetch handler, and `scripts/demo-x402-check.mjs` runs the demo from the packed tarball
 against the live check API. `scripts/test-x402-base.mjs` (also part of `npm test`) covers the Base path and the
 bridge; with `--fork`, `BASE_RPC_URL` settles a seller's USDC 402 on a Base fork, and `RPC_URL` deposits into the real Across spoke on a
-Robinhood Chain fork.
+Robinhood Chain fork. `scripts/test-x402-routes.mjs` (part of `npm test`) runs `payViaGateway` against a mock Keyring
+and a mock Base seller, and pays 4663 merchants whose facilitator is a mock of Dexter's.

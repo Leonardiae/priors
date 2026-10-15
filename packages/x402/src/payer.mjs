@@ -25,12 +25,18 @@
 // signed, and so is one whose free part is: `baseReserve()` names what the float keeps back (the MCP's return to
 // Robinhood Chain whose authorization can still pull it). A seller that offers both is paid in USDG on Robinhood Chain.
 // Legacy v1 bodies stay Robinhood Chain only.
+//
+// The Vantis gateway (gateway.mjs; off unless `gateway` is given): `payViaGateway` buys from a seller in Keyring's
+// catalog (most of them paid in USDC on Base) with one USDG payment on Robinhood Chain. The gateway's quote is checked
+// first (maxPrice, and its fee over the seller's own listed price); its 402 is then paid by the same path as any
+// Robinhood Chain merchant's, with every rule above, and must ask no more than the quote.
 import { ethers } from "ethers";
 import { x402Client, x402HTTPClient, decodePaymentResponseHeader } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { robinhood, ROBINHOOD_NETWORKS, DEFAULT_MAX_PRICE, MAX_VALIDITY_SECONDS, TRANSFER_WITH_AUTHORIZATION_TYPES, toAtomicUsdg, formatUsdg } from "./robinhood.mjs";
 import { PayError, borrowGap, settleLoans, poolContract, ERC20_ABI } from "./credit.mjs";
 import { DEFAULT_PAY_NETWORKS, ROBINHOOD_USDG, networkOf, payNetworks } from "./networks.mjs";
+import { gatewayConfig, findGatewayService, checkGatewayQuote, gatewayRun } from "./gateway.mjs";
 
 const sameAddr = (a, b) => typeof a === "string" && typeof b === "string" && ethers.isAddress(a) && ethers.isAddress(b) && ethers.getAddress(a) === ethers.getAddress(b);
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -487,6 +493,8 @@ export function createPayer(opts = {}) {
   }
   const maxPrice = toAtomicUsdg(opts.maxPrice ?? DEFAULT_MAX_PRICE, "maxPrice");
   const maxBorrow = toAtomicUsdg(opts.maxBorrow ?? 0n, "maxBorrow");
+  // The Vantis gateway route: null (off) unless the caller names one.
+  const gateway = gatewayConfig(opts.gateway);
   const http = new x402HTTPClient(new x402Client());
 
   const fx = timedFetch(fetchImpl, { timeoutMs, signal });
@@ -495,15 +503,54 @@ export function createPayer(opts = {}) {
   // still cash one, so a later pay() for the same purchase resends it instead of signing a second.
   const unsettled = new Map();
   // One payment at a time for this wallet: two concurrent pay() calls on a short balance would each read it short and
-  // each borrow the gap (private report GHSA-482p, F3). The second waits and sees the first's loan.
+  // each borrow the gap (private report GHSA-482p, F3). The second waits and sees the first's loan. Gateway payments
+  // join the same queue.
   let queue = Promise.resolve();
-  function pay(input, init) {
-    const run = queue.then(() => payOne(input, init));
+  function enqueue(fn) {
+    const run = queue.then(fn);
     queue = run.catch(() => {});
     return run;
   }
+  const pay = (input, init) => enqueue(() => payOne(input, init));
 
-  async function payOne(input, init) {
+  /** One JSON read from the gateway (its catalog and quotes): 200 only, redirects not followed, the body capped; with
+   *  `missingOk`, a 404 is null (no such record). Its words are never quoted in an error: callers show these messages
+   *  to a model. */
+  async function getJson(url, { missingOk = false } = {}) {
+    let r;
+    try { r = await fx(new Request(url, { redirect: "manual", headers: { accept: "application/json" } })); } catch (e) {
+      if (isAbort(e)) throw e;
+      throw new PayError("GATEWAY_UNAVAILABLE", "payViaGateway: the gateway could not be reached; nothing was paid");
+    }
+    if (r.status === 404 && missingOk) { await r.body?.cancel().catch(() => {}); return null; }
+    if (r.status !== 200) throw new PayError("GATEWAY_UNAVAILABLE", `payViaGateway: the gateway answered HTTP ${r.status} to a read; nothing was paid`);
+    const { text, cut } = await readCapped(r);
+    if (cut) throw new PayError("GATEWAY_UNAVAILABLE", "payViaGateway: the gateway's answer is too large; nothing was paid");
+    try { return JSON.parse(text); } catch (_) { throw new PayError("GATEWAY_UNAVAILABLE", "payViaGateway: the gateway's answer is not JSON; nothing was paid"); }
+  }
+
+  /**
+   * Buy from a seller in the gateway's catalog with one USDG payment on Robinhood Chain (gateway.mjs). Reads the
+   * seller's record and the gateway's quote, refuses before anything is signed or borrowed what they do not allow, then
+   * pays the gateway's 402 as pay() pays any Robinhood Chain merchant, at no more than the quote.
+   */
+  async function payViaGateway(o = {}) {
+    if (!gateway) throw new PayError("GATEWAY_OFF", "payViaGateway: no gateway is configured (createPayer({ gateway: {} }) turns on the Vantis gateway); nothing was read or paid");
+    const service = await findGatewayService(gateway, o, getJson);
+    const quoted = checkGatewayQuote(await getJson(`${gateway.url}/api/gateway/quote/${service.serviceId}`), service, { maxPrice, maxFeeBps: gateway.maxFeeBps });
+    const call = gatewayRun(gateway, service.serviceId, o.input);
+    const info = { serviceId: service.serviceId, resource: service.resource, method: service.method, network: service.network, listed: service.listed, quoted };
+    try {
+      return { ...(await enqueue(() => payOne(call.url, call.init, { quoted, payTo: gateway.payTo }))), gateway: info };
+    } catch (e) {
+      if (e && typeof e === "object") e.gateway = info;
+      throw e;
+    }
+  }
+
+  async function payOne(input, init, route = null) {
+    // A gateway call (`route`) is paid on Robinhood Chain only, whatever networks the payer signs for elsewhere.
+    const callNetworks = route ? DEFAULT_PAY_NETWORKS : networks;
     const base = asRequest(input, init);
     const key = await purchaseKey(base);
     const nowS = Math.floor(Date.now() / 1000);
@@ -533,10 +580,10 @@ export function createPayer(opts = {}) {
       else throw new PayError("BAD_402", "pay: the 402 response carries no x402 payment requirements");
     }
     const version = paymentRequired?.x402Version;
-    const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr, { networks }) : version === 1 && networks.includes(robinhood.network) ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
+    const req = version === 2 ? pickV2Requirement(paymentRequired.accepts, usdgAddr, { networks: callNetworks }) : version === 1 && callNetworks.includes(robinhood.network) ? pickV1Requirement(paymentRequired.accepts, usdgAddr) : null;
     // Never quote the merchant's value: callers show this message to a model, outside any data fence.
     if (version !== 1 && version !== 2) throw new PayError("BAD_402", `pay: unsupported x402Version (${Number.isSafeInteger(version) ? version : `a ${typeof version}`})`);
-    if (!req) throw new PayError("NO_USDG_REQUIREMENT", `pay: the resource does not accept exact USDG on Robinhood Chain${networks.includes("eip155:8453") ? " or USDC on Base" : ""}`);
+    if (!req) throw new PayError("NO_USDG_REQUIREMENT", `pay: the resource does not accept exact USDG on Robinhood Chain${callNetworks.includes("eip155:8453") ? " or USDC on Base" : ""}`);
     // The network it is paid on, and its token (v1 is Robinhood Chain only): the payer's own values, never the merchant's text.
     const n = version === 2 ? networkOf(req.network) : ROBINHOOD_USDG;
     const onRobinhood = n.network === robinhood.network;
@@ -545,13 +592,19 @@ export function createPayer(opts = {}) {
     const price = BigInt(version === 2 ? req.amount : req.maxAmountRequired);
     // The merchant names the price. Without a cap a funded agent signs whatever a 402 asks (its whole balance).
     if (price > maxPrice) throw new PayError("PRICE_ABOVE_MAX_PRICE", `pay: price ${price} is above maxPrice ${maxPrice}; not paying`, { price, maxPrice });
+    // A gateway call: the 402 may ask no more than the quote the caller's checks passed, and pay only the address the
+    // caller pinned (gateway.payTo), before anything is read, topped up, borrowed or signed.
+    if (route) {
+      if (price > route.quoted) throw new PayError("GATEWAY_PRICE_ABOVE_QUOTE", `pay: the gateway's 402 asks ${price}, more than its quote ${route.quoted}; nothing was read, borrowed or signed`, { price, quoted: route.quoted });
+      if (route.payTo && !sameAddr(req.payTo, route.payTo)) throw new PayError("GATEWAY_PAYTO_MISMATCH", "pay: the gateway's 402 names a payTo other than gateway.payTo; nothing was read, borrowed or signed");
+    }
 
     const me = await signer.getAddress();
     // The client that will sign judges the requirement before anything is read, topped up, borrowed or signed: x402
     // core refuses at signing time what its own selection does not take, and that must never come after a loan
     // (GHSA-f35g: a paymentFlow core does not know threw once the borrow had mined). Core's words are not passed on:
     // some of its errors quote the merchant's requirements, and callers show this message to a model.
-    const client = version === 2 ? createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me), networks }) : null;
+    const client = version === 2 ? createUsdgClient({ signer, maxPrice, maxValiditySeconds, asset: usdgAddr, x402Signer: toX402Signer(signer, me), networks: callNetworks }) : null;
     if (client) {
       try { client.selectPaymentRequirements(2, [req]); } catch (_) {
         throw new PayError("NO_USDG_REQUIREMENT", "pay: x402 core would not sign the requirement this payer picked; nothing was read, borrowed or signed");
@@ -640,6 +693,7 @@ export function createPayer(opts = {}) {
 
   return {
     pay,
+    payViaGateway,
     resend: (input, paymentHeaders, init) => resend(input, paymentHeaders, { ...resendOpts, init }),
     settleLoans: (o = {}) => {
       if (!pool || agentId === undefined || agentId === null) throw new PayError("NO_POOL", "settleLoans: createPayer was given no pool/agentId");

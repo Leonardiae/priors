@@ -1,5 +1,24 @@
 # @priors/x402 changelog
 
+## 0.8.0 (2026-10-15)
+
+- **`payViaGateway`: buy from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain.** Off
+  unless `createPayer({ gateway })` names it (`{}` is https://keyring.vantis.sh). Most of these sellers are paid in
+  USDC on Base. Keyring pays the seller and relays the answer, so the agent's Priors line can cover such a seller
+  with no Base float.
+  - Before anything is signed or borrowed:
+    - the seller's record must name the resource and method asked for (not marked suspicious or testnet, with a
+      listed price);
+    - Keyring's quote must be armed, in USDG on Robinhood Chain, within `maxPrice` and within `gateway.maxFeeBps`
+      (default 1000) over the seller's listed price;
+    - the gateway's 402 must ask no more than the quote, on Robinhood Chain only, and pay `gateway.payTo` when set.
+  - Then it is paid as `pay()` pays any Robinhood Chain merchant (balance, `topUp`, a loan of only the shortfall
+    within `maxBorrow`, one signature), in the same one-at-a-time queue.
+  - New codes: `GATEWAY_OFF`, `BAD_GATEWAY`, `BAD_GATEWAY_SERVICE`, `GATEWAY_NO_SERVICE`, `GATEWAY_REFUSED`,
+    `GATEWAY_UNAVAILABLE`, `GATEWAY_FEE_TOO_HIGH`, `GATEWAY_PRICE_ABOVE_QUOTE`, `GATEWAY_PAYTO_MISMATCH`.
+  - Tested against a mock gateway only. Its 402 shape and `payTo` are not yet seen live: see `docs/X402-ROUTES.md`.
+- No new names in the package's exports (`createPayer` takes a new option; the payer has a new method).
+
 ## 0.7.1 (2026-10-13)
 
 - **Fix: a check API answer with no record in it no longer passes a payer.** With the API source, an HTTP 200 whose

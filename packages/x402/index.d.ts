@@ -149,6 +149,30 @@ export interface CreatePayerOptions {
    *  (credit v5BeforeBorrow). */
   v5?: string | any | null;
   v5Root?: bigint | number | string | null;
+  /** The Vantis gateway (Keyring) for `payViaGateway`; off when absent. `{}` is Vantis' own (https://keyring.vantis.sh).
+   *  Since 0.8.0. */
+  gateway?: GatewayOptions | null | false;
+}
+
+/** The Vantis gateway: buy from a seller in Keyring's catalog (most paid in USDC on Base) with USDG on Robinhood Chain. */
+export interface GatewayOptions {
+  /** Gateway origin; default "https://keyring.vantis.sh". https only (plain http on loopback, for tests). */
+  url?: string;
+  /** Most the gateway's quote may exceed the seller's own listed price by, in basis points; default 1000 (10 %). */
+  maxFeeBps?: number;
+  /** When set, the only payTo a gateway 402 may name (Keyring's address, once read from a first live call). */
+  payTo?: string;
+}
+
+/** Which seller a gateway purchase is for, and what to send it. */
+export interface GatewayPurchase {
+  /** Keyring's catalog id (svc_ and 10 hex digits); or name the seller by `resource`. */
+  serviceId?: string;
+  /** The seller's own URL; one catalog record must name it (and `method`, when given). */
+  resource?: string;
+  method?: string;
+  /** Sent to Keyring as `input` in POST /x402/run {serviceId, input}, as Keyring wants it for that seller. */
+  input?: unknown;
 }
 
 /** What a `topUp` did (the shape of topUpFromSavings' result; `error` when it threw). */
@@ -186,6 +210,8 @@ export interface PayResult {
   resent?: boolean;
   /** When `topUp` ran: what it did. */
   savings?: SavingsTopUp;
+  /** payViaGateway only: the seller (from Keyring's record), its own listed price and the gateway's quote, atomic dollars. */
+  gateway?: { serviceId: string; resource: string; method: string | null; network: string | null; listed: bigint; quoted: bigint };
 }
 
 export interface Payer {
@@ -193,6 +219,10 @@ export interface Payer {
    *  this call: before the payment is signed nothing more is read, topped up, borrowed or signed and it rejects with the
    *  abort; once the payment may be out the abort is pending, never thrown. */
   pay(input: RequestInfo | URL, init?: RequestInit): Promise<PayResult>;
+  /** Buy from a seller in the Vantis gateway's catalog with one USDG payment on Robinhood Chain (needs `gateway`; else
+   *  GATEWAY_OFF). The seller's record and the gateway's quote are checked first (maxPrice; maxFeeBps over the seller's
+   *  listed price); the gateway's 402 is then paid as `pay` pays a Robinhood Chain merchant, at no more than the quote. */
+  payViaGateway(purchase: GatewayPurchase): Promise<PayResult>;
   /** Resend an already-signed payment (from a pending result); never signs. */
   resend(input: RequestInfo | URL, paymentHeaders: Record<string, string>, init?: RequestInit): Promise<{ response: Response; pending: boolean; timedOut?: boolean; transportError?: boolean; error?: unknown; paymentHeaders?: Record<string, string> }>;
   /** Repay open loans, earliest due first, while the wallet covers them. */
