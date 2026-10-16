@@ -133,7 +133,7 @@ than trusting this file. It does not read the v2 record: for v2, compare each ad
 zeroed, metadata stripped). The v2 set matched on 2026-09-25; `seatVaultV4` and `seatSizerV4` matched on
 2026-09-29, and so did V3's `seatSizer`. For the stock vault the record holds the proxy (`StockVaultProxy`): what
 matches `forge build` of `src/StockVault.sol` is the implementation behind it (its ERC-1967 implementation slot):
-`0x796FCcBdab6d473Ab22728D246AcAea0905b8E0B` since the upgrade of 2026-10-11 (SV-17), whose code matched the build when it was deployed the same day (before it, `0x737b015244C2115E774FABda72325C719b997d7C` from the upgrade of 2026-10-10, deployed on 2026-10-08; `0xAe8f0A34A0bEf514D61132726bCF6a78960672a4` from the upgrade of 2026-10-10; `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` from the upgrade of 2026-10-04, which matched on 2026-10-07;
+`0x02f0bF6259bDFef1Dad13D63b6D684c98596af5d` since the upgrade of 2026-10-13 (the fair default, SV-11), whose code matches the build (checked 2026-10-16; before it, `0x796FCcBdab6d473Ab22728D246AcAea0905b8E0B` from the upgrade of 2026-10-11 (SV-17), which matched the build the day it was deployed; `0x737b015244C2115E774FABda72325C719b997d7C` from the upgrade of 2026-10-10, deployed on 2026-10-08; `0xAe8f0A34A0bEf514D61132726bCF6a78960672a4` from the upgrade of 2026-10-10; `0xC16f7230b79Fb7dB3b1761A23e9d56365300B2A4` from the upgrade of 2026-10-04, which matched on 2026-10-07;
 `0x32F1c32A8bdDCd72B18A4f97dc815F50099ad0A5` from the upgrade of 2026-10-01, matched that day;
 `0x8Be04c08De0158c88F84875DAe181054c30734fA` matched on 2026-09-30 and the first one,
 `0xF781b2634254d7819E9E17BfFc9D18C54C32008b`, on 2026-09-29). The six protocol contracts (`poolSteward`,
