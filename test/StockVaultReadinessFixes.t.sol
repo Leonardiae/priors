@@ -102,6 +102,7 @@ contract StockVaultReadinessFixesTest is StockVaultBase {
             rhFeed.set(6000e8, t0 + h * 1 hours); // the lagging price, every hour
             if (h % 24 == 0) {
                 vm.warp(t0 + h * 1 hours);
+                _tape(address(rhFeed));
                 assertEq(vault.lendStatus(address(rh)), vault.HOLD_PRICE_MOVED(), "held on every day of the lag");
             }
         }

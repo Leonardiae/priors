@@ -7,7 +7,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {CreditPoolV2} from "../src/CreditPoolV2.sol";
-import {StockVault, IPriceFeed} from "../src/StockVault.sol";
+import {StockVault, StockVaultHolds, IPriceFeed} from "../src/StockVault.sol";
 import {StockVaultBase, MockStock} from "./StockVault.t.sol";
 
 /// A stock token's implementation as its beacon serves it: the test token's storage and functions, answering the
@@ -365,6 +365,8 @@ contract StockVaultTokenDecimalsForkTest is Test {
     function test_fixedImplementation_refusesUntilTheSafeRereadsTheToken() public {
         _skipUnlessForked();
         _upgradeToTheSource();
+        (address spyFeed,,,,,,) = VAULT.assets(SPY);
+        VAULT.holds().record(spyFeed, 10_000); // a new implementation's price tape starts empty
         uint256 price8 = _spyPrice();
         _issuerMovesTheStockTokensTo(24);
         _noLineOnTheCachedTokenScale(price8);
@@ -392,12 +394,30 @@ contract StockVaultTokenDecimalsForkTest is Test {
             holds[i] = VAULT.lendStatus(list[i]);
         }
         _upgradeToTheSource();
+        _recordEveryFeed(list); // a new implementation's price tape starts empty (GHSA-7gq2-77ph-mw6j)
+        uint256 changed;
         for (uint256 i; i < list.length; ++i) {
             (bool ok, uint256 value) = VAULT.valueOf(list[i], 1e18);
+            uint8 hold = VAULT.lendStatus(list[i]);
+            if (hold != holds[i]) {
+                // only the price hold may change: it now compares every round of the window, not a sample of them
+                assertTrue(hold <= 1 && holds[i] <= 1, "only the price hold changes");
+                changed++;
+                continue;
+            }
             assertEq(ok, oks[i], "priced as before");
             assertEq(value, values[i], "the same value");
-            assertEq(VAULT.lendStatus(list[i]), holds[i], "the same hold");
         }
-        emit log_named_uint("listed tokens priced as before", list.length);
+        emit log_named_uint("listed tokens priced and held as before", list.length - changed);
+        emit log_named_uint("price holds the full-window check changes", changed);
+    }
+
+    /// Records every listed feed on the vault's price tape (anyone may; the upgrade's runbook does it first).
+    function _recordEveryFeed(address[] memory list) internal {
+        StockVaultHolds h = VAULT.holds();
+        for (uint256 i; i < list.length; ++i) {
+            (address feed,,,,,,) = VAULT.assets(list[i]);
+            h.record(feed, 10_000);
+        }
     }
 }

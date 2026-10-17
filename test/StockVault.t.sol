@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {CreditPool} from "../src/CreditPool.sol";
 import {CreditPoolV2} from "../src/CreditPoolV2.sol";
-import {StockVault} from "../src/StockVault.sol";
+import {StockVault, StockVaultHolds} from "../src/StockVault.sol";
 import {deployStockVault} from "./StockVaultDeploy.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 import {MockIdentityRegistry} from "../src/mocks/MockIdentityRegistry.sol";
@@ -194,6 +194,14 @@ contract StockVaultBase is Test {
     function _borrow(address op, uint256 id, uint256 amount) internal returns (uint256) {
         vm.prank(op);
         return pool.borrow(id, amount, 7 days, op, type(uint256).max);
+    }
+
+    /// Records `feed`'s rounds on the vault's price tape (anyone may), as a keeper or a borrower's client does before
+    /// new credit on a feed with more rounds in its window than the price hold reads live.
+    function _tape(address feed) internal {
+        StockVaultHolds h = vault.holds();
+        vm.prank(anyone);
+        h.record(feed, 10_000);
     }
 }
 

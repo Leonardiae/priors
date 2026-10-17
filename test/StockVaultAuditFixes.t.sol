@@ -122,7 +122,22 @@ contract StockVaultAuditFixesTest is StockVaultBase {
             vm.warp(t0 + d * 1 days);
             rhFeed.set(600e8, t0 + d * 1 days); // a daily round at the right price
         }
-        assertEq(vault.lendStatus(address(rh)), 0, "5 days of steady rounds since the lag ended");
+        // 5 days of steady rounds since the lag ended, but its two rounds are 9 days old, inside the 14-day window:
+        // still held (the walk over the rounds 1, 2, 4 … back skipped them and lent here: GHSA-7gq2-77ph-mw6j)
+        _tape(address(rhFeed));
+        assertEq(vault.lendStatus(address(rh)), vault.HOLD_PRICE_MOVED(), "the lag's rounds are still in the window");
+        // released once the last lagging round's UTC day has left the window
+        uint256 release = ((t0 + 1 hours) / 1 days + 1) * 1 days + 14 days;
+        for (uint256 d = 10; t0 + d * 1 days < release; d++) {
+            vm.warp(t0 + d * 1 days);
+            rhFeed.set(600e8, t0 + d * 1 days);
+            _tape(address(rhFeed));
+            assertEq(vault.lendStatus(address(rh)), vault.HOLD_PRICE_MOVED(), "held while a lagging round is in it");
+        }
+        vm.warp(release);
+        rhFeed.set(600e8, release);
+        _tape(address(rhFeed));
+        assertEq(vault.lendStatus(address(rh)), 0, "the lag has left the window");
         assertEq(_openRh(AGENT_PK, AGENT, SHARE / 2), 150 * USDC);
     }
 

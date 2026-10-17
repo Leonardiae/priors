@@ -284,7 +284,11 @@ The agent's owner deposits one of the 35 accepted tokens (listed with their Chai
 token's loan-to-value: 25-70% of the deposit's value by token, plus up to 15 points for a record of repaying treasury
 credit, never above 70%, at most $500. Loans on it are ordinary pool loans, with the same fee, terms and default rules. Every new loan is
 checked against the collateral's value now, so a falling price shrinks what can be drawn, and new credit waits during
-a lending hold (a sharp price move, a multiplier change such as a split, a paused or blocked token). Closing gives
+a lending hold (a sharp price move, a multiplier change such as a split, a paused or blocked token). The price hold
+compares the latest price with every round of the last 14 days through a price tape kept by the vault's `holds()`
+contract: anyone may record it (`record(feed, maxRounds)`, which only reads the feed), Priors' keeper records every
+feed every 10 minutes, and while more than 6 rounds of a token's window are not recorded, new credit on it waits
+(shown as the price hold) until someone records. Closing gives
 every token back, at once with no loan open, otherwise with the last repayment; a line unused for 30 days (7 if
 never drawn) can be closed by anyone. A default seizes tokens worth what the agent owes (principal and fees) plus a 20%
 buffer, at the last valid price, and gives the rest back to the depositor; with no usable price, or a deposit worth
@@ -394,7 +398,7 @@ The target chain is [Robinhood Chain](https://docs.robinhood.com/chain/) mainnet
 | **SeatVaultV5** (live since 2026-10-11, root `#8762`; owner-only backing; it replaced the deployment of 2026-10-09, `0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, root `#8641`, which never had a book and whose root's USDG moved to it) | `0xC999014C6218EC41f0aE412d49AE8f2aA4c539fD` |
 | SeatVaultV5's linked libraries (`src/v5/`; V5 calls them by DELEGATECALL) | `V5Pos` `0xd2d393Daf7bABE6ac090a97765407256673Bf9Bc`, `V5Steps` `0x3a4B951E0eae25DD327224395ecE0C6fD6345f94`, `V5Book` `0x90992387BbfBcF6aB179B33535d283FEE2d832F4`, `V5Records` `0x23C3660Cd36401F6adE16f51f81F629a6aE6d826`, `V5Exit` `0x0BB0CF27E9a0f5DB38a3F58fc31b1f90D784CbC7`, `V5Auto` `0x22914DF387771bCB167Bfd1777678887D1AB1375`, `V5Sync` `0x2FE6cC16DA24694D48BbDD8C83d4732ca23276F4`, `V5View` `0xE5175D7C9C30E210197D23A45A3e0bbe66cF1846`, `V5Lens` `0x294a483e54aBE64d2037df370974304C0F3B09F7` |
 | **StockVault** (live since 2026-09-28, root `#6424`; lines against stock tokens; a Transparent proxy, `StockVaultProxy`) | `0xbEcd07EC689988e16b870C121756C4c2C8cb02B6` |
-| StockVault implementation (behind the proxy; since 2026-10-13) | `0x02f0bF6259bDFef1Dad13D63b6D684c98596af5d` |
+| StockVault implementation (behind the proxy; since 2026-10-17) | `0xcD1A85940A6A10C8f47853165A516d397f14BAa9` |
 | StockVault ProxyAdmin (the only way to upgrade the vault; owned by the timelock since 2026-10-07, by the Safe before; with no delay from 2026-10-11 19:49 UTC) | `0x5174A18550a295cd25aF59416a56B7e4c38C8Afc` |
 | Safe (2-of-3; proposes to the timelock, owns treasury v4 and both SeatSizers, so every other seat vault power, and the stock vault's settings) | `0x20c6816B2419616238772591965E6E9AbE493fD5` |
 | RevenueRouter (the steward's sweep and the vaults' fees go here) | `0xb2E217C5841a968C48Eee41DCbF7D2a03cCA4F43` |

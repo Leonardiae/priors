@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CreditPoolV2} from "../src/CreditPoolV2.sol";
-import {StockVault, IPriceFeed} from "../src/StockVault.sol";
+import {StockVault, StockVaultHolds, IPriceFeed} from "../src/StockVault.sol";
 import {deployStockVault} from "./StockVaultDeploy.sol";
 
 interface IRegistryMint {
@@ -51,6 +51,7 @@ contract StockVaultForkTest is Test {
             address(this)
         );
         vault.setAsset(SPY, SPY_FEED, MAX_AGE, true, 5000, type(uint128).max);
+        vault.holds().record(SPY_FEED, 10_000); // the price tape (GHSA-7gq2-77ph-mw6j): anyone records it
         vaultId = reg.register("https://priors.trade/agents/stock-vault-fork.json");
         reg.transferFrom(address(this), address(vault), vaultId);
         vault.adopt(vaultId);
@@ -154,6 +155,7 @@ contract StockVaultForkTest is Test {
             address token = vm.parseJsonAddress(json, string.concat(at, ".token"));
             address feed = vm.parseJsonAddress(json, string.concat(at, ".feed"));
             vault.setAsset(token, feed, MAX_AGE, true, 5000, type(uint128).max);
+            vault.holds().record(feed, 10_000);
             _cool(token, feed);
             uint256 g = gasleft();
             vault.valueOf(token, 1e18); // _valueOf and every hold, as canBorrow runs them
@@ -187,6 +189,7 @@ contract StockVaultForkTest is Test {
         }
         assertTrue(token != address(0), "CRCL is in the asset file");
         vault.setAsset(token, feed, MAX_AGE, true, 5000, type(uint128).max);
+        vault.holds().record(feed, 10_000);
         // the launch's record bonus (deployments/stock-ltv.4663.json): canBorrow reads the pool's fee ledger per root
         string memory ltv = vm.readFile("deployments/stock-ltv.4663.json");
         vault.setRecordBonus(
@@ -219,6 +222,7 @@ contract StockVaultForkTest is Test {
     function _cool(address token, address feed) internal {
         vm.cool(token);
         vm.cool(feed);
+        vm.cool(address(vault.holds())); // its price tape too
         (bool ok, bytes memory r) = feed.staticcall(abi.encodeWithSignature("aggregator()"));
         if (ok && r.length >= 32) vm.cool(abi.decode(r, (address)));
         (ok, r) = token.staticcall(abi.encodeWithSignature("ACCESS_CONTROLLED_REGISTRY()"));
