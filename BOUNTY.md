@@ -20,14 +20,14 @@ is here and the door is open. If you want it to pay rent, it will not.
 
 | Severity | What it means | Award |
 |---|---|---|
-| **Critical** | Funds leave the pool to someone not owed them, lender principal can be reached, a backer's stake or a staker's seat can be taken, or stock deposited in the stock vault can be taken other than by a default of its own position's loan. Anyone can do it, no privileged key. | **$3,000** |
-| **High** | Credit can be obtained without the invite, the consent, the seat or the backing that is supposed to gate it, a stock line can be drawn beyond its loan-to-value of the collateral's value now, or accounting can be corrupted so the ledger lies about who repaid what. | **$1,000** |
-| **Medium** | A rule can be bypassed with a privileged key that should not be able to bypass it, or a griefing path that costs others money without profiting you. | **$250** |
+| **Critical** | Funds leave the pool to someone not owed them, lender principal can be reached, a backer's stake or a staker's seat can be taken, or stock deposited in the stock vault can be taken other than by a default of its own position's loan. Anyone can do it, no privileged key. | **$300** |
+| **High** | Credit can be obtained without the invite, the consent, the seat or the backing that is supposed to gate it, a stock line can be drawn beyond its loan-to-value of the collateral's value now, or accounting can be corrupted so the ledger lies about who repaid what. | **$100** |
+| **Medium** | A rule can be bypassed with a privileged key that should not be able to bypass it, or a griefing path that costs others money without profiting you. | **$50** |
 | **Low / Informational** | Wrong behaviour with no path to loss: a misleading view, a revert that should not happen, a documented rule the code does not implement. | public credit and acknowledgement only, no payout |
 
 Paid in USDG on Robinhood Chain, or in whatever else we can agree on. One award per root cause, not per call
 site. Anything below Medium is credited in public, not paid. We would rather say that here than argue about it
-afterwards.
+afterwards. These amounts apply from 2026-10-18; a report received before then keeps the award it was told.
 
 Severity is our judgement, argued in writing with you, not a number we pick in private. If you disagree with
 where we land, say so — the reasoning is the part we will publish.
