@@ -201,8 +201,9 @@ contract StockVaultJumpWindowTest is JumpWindowBase {
         assertEq(vault.lendStatus(address(ionq)), 0, "recorded, nothing over 25% in the window");
     }
 
-    /// A round of the window that cannot be read holds new credit for as long as its day is in the window, whether
-    /// it is read from the feed or recorded on the tape.
+    /// A round of the window that cannot be read holds new credit while it is in the window: read from the feed, for
+    /// its own day; recorded on the tape, from the UTC day it was recorded (its own is unknown; GHSA-q29p-rp35-p8v2),
+    /// so a backfill holds it up to that much longer, never shorter.
     function test_unreadableRoundInTheWindow_holds() public {
         GapFeed g = new GapFeed(8, OTHERS);
         vm.warp(T + 20 days);
@@ -216,12 +217,21 @@ contract StockVaultJumpWindowTest is JumpWindowBase {
         vm.prank(owner);
         vault.setAsset(address(ionq), address(g), 4 days, true, 2500, uint128(500 * USDC));
         _record(address(g));
+        uint256 recorded = _now() / 1 days;
         assertEq(vault.lendStatus(address(ionq)), vault.HOLD_PRICE_MOVED(), "a round of the window cannot be read");
         (,,, uint256 at) = g.timeOf(uint80(gapId));
         vm.warp((at / 1 days + 1) * 1 days + 14 days + 1);
         g.set(OTHERS, _now());
         _record(address(g));
-        assertEq(vault.lendStatus(address(ionq)), 0, "its day has left the window");
+        assertEq(
+            vault.lendStatus(address(ionq)),
+            vault.HOLD_PRICE_MOVED(),
+            "its own day has left, the day it was recorded not"
+        );
+        vm.warp((recorded + 1) * 1 days + 14 days + 1);
+        g.set(OTHERS, _now());
+        _record(address(g));
+        assertEq(vault.lendStatus(address(ionq)), 0, "the day it was recorded has left the window");
     }
 
     /// With no window (the guard as loosened on 2026-10-05), only the round before the latest is compared, recorded

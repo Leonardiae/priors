@@ -55,11 +55,18 @@ contract StockVaultHolds {
     uint8 internal constant HOLD_MULTIPLIER = 2;
     uint8 internal constant HOLD_TOKEN_PAUSED = 3;
     uint8 internal constant HOLD_TOKEN_BLOCKED = 4;
-    // The price tape keeps each UTC day's lowest and highest answer for TAPE_DAYS days, one slot a day: the longest
-    // window (14 days) spans 15 days, so a day's slot is not reused while the window can reach it. A new tape (or a
-    // feed's new phase) starts at the first round of the last TAPE_FROM.
-    uint256 internal constant TAPE_DAYS = 16;
-    uint256 internal constant TAPE_FROM = 15 days;
+    // more of the window than LIVE_ROUNDS is not on the tape yet: new credit waits (StockVault answers it as
+    // HOLD_PRICE_MOVED), and a default waits too until anyone records it, where a price move seizes everything: a tape
+    // behind says nothing of the price (GHSA-q29p-rp35-p8v2)
+    uint8 internal constant HOLD_TAPE_BEHIND = 5;
+    // The price tape keeps each UTC day's lowest, highest and last answer for TAPE_DAYS days, one entry a day: the
+    // longest window (14 days) spans 15 days, and its first day is compared with the last answer of the latest day
+    // before it with rounds (the price in force when it began), up to 6 days before it (a weekend and three holidays;
+    // the stock feeds publish on trading days only; an older one is not compared), so a day's entry is not reused while
+    // a window can reach it. A new
+    // tape (or a feed's new phase) starts at the first round of the last TAPE_FROM.
+    uint256 internal constant TAPE_DAYS = 21;
+    uint256 internal constant TAPE_FROM = 20 days;
     // the rounds a hold reads from the feed itself, newest first: those the tape has not recorded yet. A window with
     // more of them than this holds new credit until someone records the feed (the busiest live feeds publish about 650
     // rounds in 14 days, at most about 7 an hour while the market trades).
@@ -67,11 +74,14 @@ contract StockVaultHolds {
     uint256 internal constant DECIMALS_READ_GAS = 50_000; // a token's or feed's decimals(): a beacon proxy's is ~15,000
 
     /// @dev A UTC day of a feed's rounds on the tape: its lowest and highest answer (`lo` 0: one of them could not be
-    ///      read, or was not positive, so the day holds new credit for as long as the window reaches it).
+    ///      read, or was not positive, so the day holds new credit for as long as the window reaches it), and the
+    ///      answer of its last round recorded (0: unreadable), read only as the price in force when a window's first
+    ///      day begins (in a slot of its own: the window's days read the first one only).
     struct TapeDay {
         uint32 day;
         uint112 lo;
         uint112 hi;
+        uint112 last;
     }
 
     /// @dev A feed's tape: the last round recorded (its proxy round id), and, when the tape began at its phase's first
@@ -90,7 +100,10 @@ contract StockVaultHolds {
     ///         (for a new tape, or a feed whose phase changed, from the first round of the last TAPE_FROM) toward the
     ///         latest. Anyone may call it, any number of times: it only reads the feed, and never records a round twice.
     ///         New credit against a busy feed waits until its tape is less than LIVE_ROUNDS rounds behind (see
-    ///         `_priceSettled`); repaying, closing and settling never wait on it. Returns the last round recorded.
+    ///         `_priceSettled`), and so does seizing a default (StockVault `_seize`: the default's hook fails, and
+    ///         `settle` reverts TapeBehind until it is recorded); repaying and closing never wait on it. A round that
+    ///         cannot be read counts from the UTC day it is recorded, however the calls are split. Returns the last
+    ///         round recorded.
     function record(address feed, uint256 maxRounds) external returns (uint80) {
         (uint80 latest,,,,) = IPriceFeed(feed).latestRoundData();
         Tape memory t = tapes[feed];
@@ -104,39 +117,46 @@ contract StockVaultHolds {
         }
         uint256 end = latest;
         if (end - next >= maxRounds) end = next + maxRounds - 1;
-        uint256 cur; // the UTC day being gathered, and its lowest and highest answer
+        uint256 cur; // the UTC day being gathered, and its lowest, highest and last answer
         uint256 lo;
         uint256 hi;
+        uint256 last;
         for (uint256 id = next; id <= end; ++id) {
-            uint256 day = cur;
+            // a round that cannot be read counts from the day it is recorded: never before it was published, and the
+            // same day however the calls are split. It took the day of the round before it in the same call (a day
+            // before the window, for a new tape's), or today as a call's first (GHSA-q29p-rp35-p8v2)
+            uint256 day = block.timestamp / 1 days;
             uint256 a; // 0: a round that cannot be read, or not positive
             try IPriceFeed(feed).getRoundData(uint80(id)) returns (uint80, int256 answer, uint256, uint256 at, uint80) {
                 if (at != 0) day = at / 1 days;
                 if (answer > 0 && at != 0 && uint256(answer) <= type(uint112).max) a = uint256(answer);
             } catch {}
-            if (day == 0) day = block.timestamp / 1 days;
             if (day != cur) {
-                if (cur != 0) _putDay(feed, cur, lo, hi);
-                (cur, lo, hi) = (day, a, a);
+                if (cur != 0) _putDay(feed, cur, lo, hi, last);
+                (cur, lo, hi, last) = (day, a, a, a);
             } else {
                 if (a < lo) lo = a;
                 if (a > hi) hi = a;
+                last = a;
             }
         }
-        _putDay(feed, cur, lo, hi);
+        _putDay(feed, cur, lo, hi, last);
         tapes[feed] = Tape(uint80(end), t.phaseBegan);
         emit Recorded(feed, uint80(next), uint80(end));
         return uint80(end);
     }
 
-    /// @dev Merges a day's lowest and highest answer into its slot (replacing a day TAPE_DAYS older).
-    function _putDay(address feed, uint256 day, uint256 lo, uint256 hi) internal {
+    /// @dev Merges a day's lowest and highest answer into its entry (replacing a day TAPE_DAYS older), and sets its
+    ///      last. A day already TAPE_DAYS old (a tape that was not recorded for that long) is out of every window's
+    ///      reach and is not kept: its entry is a newer day's.
+    function _putDay(address feed, uint256 day, uint256 lo, uint256 hi, uint256 last) internal {
+        if (day + TAPE_DAYS <= block.timestamp / 1 days) return;
         TapeDay storage d = tapeDays[feed][day % TAPE_DAYS];
         if (d.day == day) {
             if (d.lo < lo) lo = d.lo;
             if (d.hi > hi) hi = d.hi;
         }
-        (d.day, d.lo, d.hi) = (uint32(day), uint112(lo), uint112(hi));
+        (d.day, d.lo, d.hi, d.last) = (uint32(day), uint112(lo), uint112(hi), uint112(last));
     }
 
     /// @dev Where a new tape of `feed` begins, in the phase of its round `latest`: the first round published after
@@ -171,8 +191,9 @@ contract StockVaultHolds {
     }
 
     /// @notice 0 when `vault` may give new credit against `token`, priced by `feed`; otherwise the first hold that
-    ///         applies (see StockVault.lendStatus), with the vault's own `seizeTo` and price guard. Every read is a
-    ///         bounded static call: a token or registry without the function holds nothing back.
+    ///         applies (see StockVault.lendStatus), with the vault's own `seizeTo` and price guard, or HOLD_TAPE_BEHIND
+    ///         (5: the feed's tape must be recorded first, `record`; StockVault answers it as HOLD_PRICE_MOVED). Every
+    ///         read is a bounded static call: a token or registry without the function holds nothing back.
     function lendStatus(
         address vault,
         address token,
@@ -272,8 +293,10 @@ contract StockVaultHolds {
     ///      unless the latest answer is within `maxJumpBps` of every round of the last `jumpWindow` (see
     ///      `_priceSettled`): a jump anywhere in the window (the first round of a split the feed's multiplier lags, and
     ///      every round after it until the multiplier catches up, or a move that has since reverted) holds new credit.
-    ///      A round that cannot be read, a window with more rounds than LIVE_ROUNDS that the tape has not recorded, or
-    ///      a feed younger than the window (a new phase) holds it too: history that cannot be checked is not trusted.
+    ///      A round that cannot be read, or a feed younger than the window (a new phase) holds it too: history that
+    ///      cannot be checked is not trusted. A window with more rounds than LIVE_ROUNDS that the tape has not recorded
+    ///      is HOLD_TAPE_BEHIND: anyone records it (`record`), and the vault answers it as HOLD_PRICE_MOVED but for a
+    ///      default, which waits for it.
     function _feedHold(address feed, uint256 effectiveAt, uint256 maxJumpBps, uint256 jumpWindow)
         internal
         view
@@ -288,22 +311,27 @@ contract StockVaultHolds {
         } catch {
             return HOLD_PRICE_MOVED;
         }
-        return _priceSettled(feed, id, price, maxJumpBps, jumpWindow) ? 0 : HOLD_PRICE_MOVED;
+        return _priceSettled(feed, id, price, maxJumpBps, jumpWindow);
     }
 
-    /// @dev The jump check of `_feedHold`, from the latest round `id` at `price`: true (settled) when no round of the
+    /// @dev The jump check of `_feedHold`, from the latest round `id` at `price`: 0 (settled) when no round of the
     ///      last `jumpWindow` answered more than `maxJumpBps` away from `price` (as a share of that round's answer).
     ///      Every round counts: the walk this replaces read the rounds 1, 2, 4 … 4,096 back only, and settled at the
     ///      first of them published before the window, so a round between two of them was never compared
     ///      (GHSA-7gq2-77ph-mw6j). The rounds the feed's tape has not recorded are read from the feed, newest first, at
     ///      most LIVE_ROUNDS of them, down to the first one published at or before the window (compared too, as
-    ///      before); the older ones are compared through the tape, each UTC day of the window by its lowest and highest
-    ///      answer. A day counts whole: a round holds new credit until `jumpWindow` after the end of its UTC day. With
-    ///      `jumpWindow` 0, the round before the latest is the only one compared, as before.
+    ///      before); more than that is HOLD_TAPE_BEHIND. The older ones are compared through the tape, each UTC day of
+    ///      the window by its lowest and highest answer, and the price in force when its first day began (as the live
+    ///      walk compares the round in force when the window opens) by the last answer of the latest day before it on
+    ///      the tape (GHSA-q29p-rp35-p8v2: with the tape through the round before the latest, that round was never
+    ///      compared), when the tape reaches it (a feed silent for more than the TAPE_DAYS the window leaves, about 6
+    ///      days, before the window: not compared, as before). A day counts whole: a round holds new credit until `jumpWindow`
+    ///      after the end of its UTC day (and, as the last of its day, while it is the price in force when a window's
+    ///      first day begins). With `jumpWindow` 0, the round before the latest is the only one compared, as before.
     function _priceSettled(address feed, uint80 id, uint256 price, uint256 maxJumpBps, uint256 jumpWindow)
         internal
         view
-        returns (bool)
+        returns (uint8)
     {
         uint256 since = block.timestamp > jumpWindow ? block.timestamp - jumpWindow : 0;
         Tape memory t = tapes[feed];
@@ -312,24 +340,32 @@ contract StockVaultHolds {
         uint256 taped = jumpWindow != 0 && t.through >> 64 == id >> 64 && t.through <= id ? t.through : 0;
         uint256 k = id;
         for (uint256 i;; ++i) {
-            if (uint64(k) == 1) return false; // no round before this one in the phase, and still inside the window
+            if (uint64(k) == 1) return HOLD_PRICE_MOVED; // no round before this one in the phase, still in the window
             --k;
             if (k <= taped) break; // the rest is on the tape
-            if (i == LIVE_ROUNDS) return false; // more of the window than is read here, and not on the tape
+            if (i == LIVE_ROUNDS) return HOLD_TAPE_BEHIND; // more of the window than is read here, not on the tape
             try IPriceFeed(feed).getRoundData(uint80(k)) returns (uint80, int256 old, uint256, uint256 at, uint80) {
-                if (old <= 0 || at == 0) return false;
-                if (_moved(price, uint256(old), maxJumpBps)) return false;
-                if (at <= since) return true; // every older round is outside the window
+                if (old <= 0 || at == 0) return HOLD_PRICE_MOVED;
+                if (_moved(price, uint256(old), maxJumpBps)) return HOLD_PRICE_MOVED;
+                if (at <= since) return 0; // every older round is outside the window
             } catch {
-                return false;
+                return HOLD_PRICE_MOVED;
             }
         }
-        if (t.phaseBegan > since) return false; // the tape began at its phase's first round, inside the window
-        for (uint256 d = since / 1 days; d <= block.timestamp / 1 days; ++d) {
-            TapeDay memory b = tapeDays[feed][d % TAPE_DAYS];
-            if (b.day == d && (_moved(price, b.lo, maxJumpBps) || _moved(price, b.hi, maxJumpBps))) return false;
+        if (t.phaseBegan > since) return HOLD_PRICE_MOVED; // the tape began at its phase's first round, in the window
+        uint256 today = block.timestamp / 1 days;
+        uint256 d = since / 1 days;
+        for (uint256 e = d; e <= today; ++e) {
+            TapeDay storage b = tapeDays[feed][e % TAPE_DAYS];
+            if (b.day == e && (_moved(price, b.lo, maxJumpBps) || _moved(price, b.hi, maxJumpBps))) {
+                return HOLD_PRICE_MOVED;
+            }
         }
-        return true;
+        while (d != 0 && d + TAPE_DAYS > today + 1) {
+            TapeDay storage b = tapeDays[feed][--d % TAPE_DAYS];
+            if (b.day == d) return _moved(price, b.last, maxJumpBps) ? HOLD_PRICE_MOVED : 0;
+        }
+        return 0;
     }
 
     /// @dev `price` is more than `maxJumpBps` away from `old`, as a share of `old` (always, for an `old` of 0).
@@ -475,7 +511,10 @@ contract StockVaultHolds {
 ///         not one the vault lends against now (stale, the oracle paused, a lending hold: a price move, a multiplier
 ///         change, the token paused or this vault or `seizeTo` blocked), the deposit is worth less than owed plus the
 ///         buffer, or the token's and its
-///         feed's decimals add up to fewer than 6 (none accepted today). A rest that cannot be sent in that call (the
+///         feed's decimals add up to fewer than 6 (none accepted today). A price tape behind (more of the window than
+///         the hold reads live: see lendStatus) is not a price that cannot be used: the seizure waits for it, the
+///         default's hook fails with the whole deposit kept, and `settle` reverts TapeBehind(feed) until anyone records
+///         the feed (`holds().record(feed, n)`), then seizes as above (GHSA-q29p-rp35-p8v2). A rest that cannot be sent in that call (the
 ///         issuer blocked the depositor, or the hook's gas does not reach it: the pool gives a hook 300,000, and the
 ///         price checks of a busy feed take much of it) never reverts the hook: it stays owed, in `held` and out of
 ///         `rescue`'s reach, as a written-off position's tokens (`closing` marks a default's), and goes out with
@@ -488,7 +527,8 @@ contract StockVaultHolds {
 ///         position, and the agent's drawn principal plus the new loan stays within `ltvOf(agent, token)` of the
 ///         collateral's value now. A falling price therefore shrinks what can be drawn; loans already open are untouched.
 ///
-///         Lending holds, for new lines and new loans only (repaying, closing and settling never wait on them): the
+///         Lending holds, for new lines and new loans (repaying and closing never wait on them; a default's seizure
+///         takes everything on one, see above, and waits only for a price tape behind): the
 ///         feed's answer moved more than `maxJumpBps` against any round of the last `jumpWindow` (a reverse split
 ///         the feed's multiplier has not caught up with yet shows as one), or that history is not on the feed's price
 ///         tape and too long to read in the call (anyone records it: `holds().record(feed, n)`); the token's
@@ -547,6 +587,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     uint8 public constant HOLD_MULTIPLIER = 2;
     uint8 public constant HOLD_TOKEN_PAUSED = 3;
     uint8 public constant HOLD_TOKEN_BLOCKED = 4;
+    // StockVaultHolds' own reason, answered as HOLD_PRICE_MOVED: the price tape is behind (a default waits for it)
+    uint8 internal constant HOLD_TAPE_BEHIND = 5;
     bytes32 internal constant LOCK = keccak256("priors.stockvault.v1.lock");
 
     enum Status {
@@ -722,6 +764,7 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     error TokensOwed(uint256 agentId);
     error TokenCapReached(address token, uint256 wanted, uint256 left);
     error Shortfall(address token);
+    error TapeBehind(address feed);
 
     /// @dev The implementation: its pool (and the pool's USDG and registry) are code, shared by every proxy of it. Its
     ///      own storage is never used (initializers disabled, owned by nobody's key), so only a proxy is a vault. The
@@ -1139,7 +1182,8 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @notice Why new lines and loans against `token` wait now: 0 none, HOLD_PRICE_MOVED (the price moved more than
     ///         `maxJumpBps` within `jumpWindow`, or its history cannot be read or is not recorded yet on the feed's price
-    ///         tape: `holds().record(feed, n)`), HOLD_MULTIPLIER (the token's multiplier
+    ///         tape: `holds().record(feed, n)`; only the last of these makes a default's seizure wait, see `settle`),
+    ///         HOLD_MULTIPLIER (the token's multiplier
     ///         changes or changed within `multiplierCooldown`), HOLD_TOKEN_PAUSED, HOLD_TOKEN_BLOCKED (this vault or
     ///         `seizeTo` is on the token's block list).
     function lendStatus(address token) external view returns (uint8) {
@@ -1384,8 +1428,14 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
     }
 
     /// @dev 0 when new credit against `token` may go ahead; otherwise the first hold that applies (see lendStatus),
-    ///      as the vault's StockVaultHolds reads it with the vault's settings.
-    function _lendStatus(address token) internal view returns (uint8) {
+    ///      as the vault's StockVaultHolds reads it with the vault's settings (a tape behind: HOLD_PRICE_MOVED).
+    function _lendStatus(address token) internal view returns (uint8 h) {
+        h = _holdOf(token);
+        if (h == HOLD_TAPE_BEHIND) h = HOLD_PRICE_MOVED;
+    }
+
+    /// @dev `_lendStatus` with HOLD_TAPE_BEHIND as such, for `_seize`.
+    function _holdOf(address token) internal view returns (uint8) {
         return holds.lendStatus(
             address(this), token, assets[token].feed, seizeTo, multiplierCooldown, maxJumpBps, jumpWindow
         );
@@ -1443,9 +1493,12 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
 
     /// @dev Seize an open position for a default (see the contract's notice) that owes `owed` (USDG, exact): the tokens
     ///      worth `owed` plus the buffer at the price, rounded up (at most one base unit of the token over the exact
-    ///      quotient: the funder's favour), when the price lends now; every token otherwise. A rest the token refuses
-    ///      to send (or that `RETURN_GAS_RESERVE` leaves no gas for) stays owed as a written-off position's tokens: in
-    ///      `held`, at the position's share, for `reclaim`.
+    ///      quotient: the funder's favour), when the price lends now; every token otherwise. While the feed's price
+    ///      tape is behind (more of the window than the hold reads live), it reverts TapeBehind(feed) instead: that
+    ///      says nothing of the price, and seizing everything on it was anyone's to time (GHSA-q29p-rp35-p8v2). The
+    ///      default's hook then fails and the position waits, the whole deposit with it, for `settle` once anyone has
+    ///      recorded the tape. A rest the token refuses to send (or that `RETURN_GAS_RESERVE` leaves no gas for) stays
+    ///      owed as a written-off position's tokens: in `held`, at the position's share, for `reclaim`.
     function _seize(uint256 id, Position storage p, uint256 owed) internal {
         uint256 amount = p.amount;
         (address token, uint256 out) = _unbook(p, Status.Seized);
@@ -1457,7 +1510,11 @@ contract StockVault is Ownable2Step, Initializable, IERC721Receiver, IBackerHook
         if (ok && scale >= 6 && (owed | price) <= type(uint128).max) {
             // ceil(owed × (1 + buffer) / price), in token units: owed and the buffer in USDG (6 decimals)
             uint256 t = Math.mulDiv(owed * (10_000 + buffer), 10 ** (scale - 6), 10_000 * price, Math.Rounding.Ceil);
-            if (t < out && _lendStatus(token) == 0) take = t;
+            if (t < out) {
+                uint8 h = _holdOf(token);
+                if (h == HOLD_TAPE_BEHIND) revert TapeBehind(s.feed);
+                if (h == 0) take = t;
+            }
         }
         IERC20(token).safeTransfer(seizeTo, take);
         emit Seized(id, seizeTo, token, take);

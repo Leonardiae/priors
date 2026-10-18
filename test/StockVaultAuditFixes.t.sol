@@ -126,8 +126,10 @@ contract StockVaultAuditFixesTest is StockVaultBase {
         // still held (the walk over the rounds 1, 2, 4 … back skipped them and lent here: GHSA-7gq2-77ph-mw6j)
         _tape(address(rhFeed));
         assertEq(vault.lendStatus(address(rh)), vault.HOLD_PRICE_MOVED(), "the lag's rounds are still in the window");
-        // released once the last lagging round's UTC day has left the window
-        uint256 release = ((t0 + 1 hours) / 1 days + 1) * 1 days + 14 days;
+        // released once the window's first UTC day begins after the lag: the last lagging round was the feed's answer
+        // until the round at t0 + 4 days, the price in force when every window's first day began until then
+        // (GHSA-q29p-rp35-p8v2: compared, as the live walk compares the round in force when the window opens)
+        uint256 release = ((t0 + 4 days) / 1 days + 1) * 1 days + 14 days;
         for (uint256 d = 10; t0 + d * 1 days < release; d++) {
             vm.warp(t0 + d * 1 days);
             rhFeed.set(600e8, t0 + d * 1 days);

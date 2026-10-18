@@ -77,7 +77,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | its libraries, which V5 calls by DELEGATECALL (they run in V5's context and hold nothing) | `V5Pos` `0xd2d393Daf7bABE6ac090a97765407256673Bf9Bc`, `V5Steps` `0x3a4B951E0eae25DD327224395ecE0C6fD6345f94`, `V5Book` `0x90992387BbfBcF6aB179B33535d283FEE2d832F4`, `V5Records` `0x23C3660Cd36401F6adE16f51f81F629a6aE6d826`, `V5Exit` `0x0BB0CF27E9a0f5DB38a3F58fc31b1f90D784CbC7`, `V5Auto` `0x22914DF387771bCB167Bfd1777678887D1AB1375`, `V5Sync` `0x2FE6cC16DA24694D48BbDD8C83d4732ca23276F4`, `V5View` `0xE5175D7C9C30E210197D23A45A3e0bbe66cF1846`, `V5Lens` `0x294a483e54aBE64d2037df370974304C0F3B09F7` |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
-| its implementation (`src/StockVault.sol`) | [`0xcD1A85940A6A10C8f47853165A516d397f14BAa9`](https://robinhoodchain.blockscout.com/address/0xcD1A85940A6A10C8f47853165A516d397f14BAa9) (since 2026-10-17) |
+| its implementation (`src/StockVault.sol`) | [`0xd30396A79D6b5BDB86D09B8c7907aD2820a42c72`](https://robinhoodchain.blockscout.com/address/0xd30396A79D6b5BDB86D09B8c7907aD2820a42c72) (since 2026-10-18) |
 
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.
@@ -141,7 +141,7 @@ Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed,
 or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
 something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
 residuals added after launch: SO-1 and SO-2 (stake held only while marking a default) and AI-1 (the invite bot's
-self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-14. V-2 (seat levers and ownership
+self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-19. V-2 (seat levers and ownership
 not reaching open seats) is fixed in `SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
 
 What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender
@@ -183,8 +183,9 @@ ones:
   deposit's Chainlink value, at most $500, out of its own stake. Every new loan asks the vault again: a fresh price,
   no lending hold, the owner who opened the position, and the drawn principal within the loan-to-value of the
   collateral's value now. A default seizes to the Safe tokens worth what is owed plus a 20% buffer at the last valid
-  price (all of them when the price can't be used), gives the rest back to the depositor, and burns the vault's stake,
-  never lenders'. Drawing past that, seizing more than that, or moving a depositor's tokens without a default, is a
+  price (all of them when the price can't be used; while the token's price tape is behind, the seizure waits and
+  `settle` takes what is owed plus 20% once the tape is recorded), gives the rest back to the depositor, and burns the
+  vault's stake, never lenders'. Drawing past that, seizing more than that, or moving a depositor's tokens without a default, is a
   finding.
 - **Bounded, known losses.** The self-seat loop (X-3), the invite-to-raise path (T10) and self-service invites
   (AI-1) can cost a backer money within the per-epoch caps stated in SECURITY-v2.md (what one week of the seat vaults
