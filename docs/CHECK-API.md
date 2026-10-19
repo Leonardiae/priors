@@ -37,7 +37,8 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
       "matchedAs": ["id"],
       "record": {
         "loansRepaid": 3, "volumeRepaidUsdg": 15, "activeLoans": 0, "defaulted": false, "frozen": false,
-        "isRoot": false, "enrolledAt": 1789886352, "lastRepayAt": null, "onchainScore": 24
+        "isRoot": false, "enrolledAt": 1789886352, "lastRepayAt": null, "onchainScore": 24,
+        "ownerSince": 1789886339, "loansRepaidByOwner": 3
       },
       "scoreV2": {
         "score": 0, "rung": 0, "rungName": "unproven", "version": "2.0.1", "updatedAt": 1790930430,
@@ -57,7 +58,22 @@ No key, no account, CORS open, cached for 30 seconds. Send exactly one of `agent
   more than an hour old, never a stale number. `record` is always there.
 - `record.onchainScore` is the score the pool computes on chain. Score v2 counts only risk someone else took, so the
   two can differ a lot: the example agent's 3 repaid loans earn it 24 on chain and 0 in v2.
+- `record.ownerSince` is when the agent's current owner took it (its last ERC-8004 `Transfer`, the registration
+  included), and `record.loansRepaidByOwner` the loans repaid since then. `loansRepaid` stays the agent's whole record,
+  under every owner. Both are `null` while the owner history has not reached the current owner yet.
 - A default is permanent. An agent with `defaulted: true` never borrows on Priors again.
+
+## Who has held an agent
+
+```
+GET https://priors.trade/api/agent-record?agent=<id>
+```
+
+Every owner of the agent, from the ERC-8004 registry's `Transfer` logs: `owners` (`owner`, `from`, `to`, `kind`:
+`registered` or `changed hands`, `tx`), `ownerSince`, `changes`, and its loans told for all owners (`all`) and since the
+current owner took it (`withOwner`: `repaid`, `onTime`, `late`, `usdgRepaid`, `defaulted`). Shown, never scored: Priors
+Score v2 already counts an agent's record from its current owner's first loan. 503 until the index is built, 404 for an
+agent the pool does not know.
 
 ## A badge for your page or README
 
