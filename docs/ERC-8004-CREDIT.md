@@ -68,7 +68,8 @@ RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as de
 - **Statement:** the leaves of one agent at one writer's sources over a block window.
 - **Class:** what secured the loan. `unsecured`, or `secured:<kind>` where kind is one of `stock`, `pt`, `lst`, `stable`,
   `nft` or `other`.
-- **Manifest:** a reader's own list of a writer's sources, taken from somewhere other than the writer's files.
+- **Manifest:** a reader's own list of a writer's sources, taken from somewhere other than the writer's files (for
+  example from on-chain associations, see On-chain manifests).
 
 ### Entries
 
@@ -325,14 +326,87 @@ declares: a full rebuild finds any loan the statements leave out at those source
 can find a loan at a contract the writer never names. Nor, without a manifest, can it tell the lender's contracts
 from one the writer adds: a source declared for the first time only needs its first block at or after its
 statement's `fromBlock`, so a writer can declare a contract of its own, and its statements then rebuild exactly from
-that contract's logs. A reader that knows a lender's contracts (from the lender's documentation, an audit, or a
-registry it trusts) MAY hold a manifest: those sources, with their first blocks, events and fields, for each writer
+that contract's logs. A reader that knows a lender's contracts (from the lender's documentation, an audit, a
+registry it trusts, or the on-chain associations below) MAY hold a manifest: those sources, with their first blocks, events and fields, for each writer
 it names. With a manifest, the reader MUST also fail a writer when seq 1 starts after a manifest source's first
 block, when a statement leaves out a manifest source whose blocks reach its window, or when a file declares a source
 the manifest does not list or with other events or fields. A reader with a manifest MUST fail a writer it trusts
 that the manifest does not name (reading that writer's sources as it declares them would drop every manifest check
 without a word), and MUST say of each writer whether the manifest named it. It MAY then scan each source over its
 manifest range only.
+
+### On-chain manifests, a profile of ERC-8092
+
+This part is optional. It lets a lender publish its manifest on chain, signed by both the lending contract and the
+writer, so a reader takes it from the chain instead of from the writer's files. It is a profile of ERC-8092
+(Associated Accounts): each source is one ERC-8092 association, stored on chain.
+
+**The association.** An ERC-8092 `AssociatedAccountRecord` with:
+
+- `initiator`: the lending contract (the source), as an ERC-7930 address on the storage contract's chain;
+- `approver`: the writer, as an ERC-7930 address on the same chain;
+- `interfaceId`: `bytes4(keccak256("CreditSource(uint64,bytes)"))`;
+- `data`: `abi.encode(uint64 firstBlock, bytes source)`, where `firstBlock` is the source's first block (as in
+  Sources) and `source` is the canonical encoding (see Encoding) of the JSON object `{"events": …, "fields": …}`
+  holding the source's `events` and `fields` exactly as its files declare them. The record carries the declaration
+  itself, not a hash of it, so a reader needs nothing but the chain;
+- `validAt` at or before the block the record is stored in, and `validUntil` zero.
+
+This text is the delegation schema ERC-8092 asks implementers of its Delegated key type to publish, selected by that
+`interfaceId`.
+
+**Who signs for the lending contract.** The lending contract signs with key type `0x8002` (ERC-1271) when it implements
+it. Otherwise the record uses key type `0x0000` (Delegated), which under this `interfaceId` means: `initiatorSignature`
+is a signature over the record's ERC-8092 EIP-712 hash by the lending contract's ERC-173 `owner()` at the block the
+record is stored in, checked with `ecrecover` when that owner has no code and with ERC-1271 when it has. A later change
+of `owner()` does not invalidate a stored record; the new owner may revoke it. The writer signs as itself (`0x0001` for
+a key, `0x8002` for a contract).
+
+**Storage.** A storage contract implements ERC-8092's on-chain storage, plus a revocation function and two views:
+
+```solidity
+interface ICreditSourceAssociations {
+    // ERC-8092 on-chain storage
+    event AssociationCreated(bytes32 indexed hash, bytes32 indexed initiator, bytes32 indexed approver, SignedAssociationRecord sar);
+    event AssociationRevoked(bytes32 indexed hash, bytes32 indexed revokedBy, uint256 revokedAt);
+    function storeAssociation(SignedAssociationRecord calldata sar) external;
+    function revokeAssociation(bytes32 hash, uint40 revokedAt) external;
+    // added by this profile
+    function sourcesOf(address writer) external view returns (bytes32[] memory associationHashes);
+    function getAssociation(bytes32 hash) external view returns (SignedAssociationRecord memory);
+}
+```
+
+- `storeAssociation` MUST validate the record as ERC-8092 requires and as this part defines (the `interfaceId`, that
+  `data` decodes as `(uint64, bytes)` with a non-empty `source`, both addresses on this chain, `validAt` not after the
+  current block's time, `validUntil` zero, `revokedAt` zero, the Delegated rule above), MUST revert otherwise, and
+  MUST emit `AssociationCreated`. Both `initiatorSignature` and `approverSignature` MUST be non-empty and valid for
+  their key types: ERC-8092 checks a signature only when its field is populated, and a record missing the lending
+  contract's signature would let a writer claim a contract that never agreed. It need not parse `source`; readers check
+  it.
+- `revokeAssociation` MUST accept a call from the writer, from the lending contract, or from the lending contract's
+  current ERC-173 `owner()`, and MUST emit `AssociationRevoked` with the stored time. The time is the later of the
+  block's time and the time given; for an association already revoked, the earlier of that time and the one stored
+  takes precedence, as ERC-8092 requires, so a second revocation can bring the end forward but never push it back.
+  ERC-8092 requires that either party can revoke; the owner revokes for a contract that cannot.
+- `sourcesOf(writer)` MUST return the hash of every association stored here whose `approver` is `writer` on this
+  chain, revoked or not, in the order they were stored. It covers this chain only: a source on another chain is
+  associated in a storage contract on that chain.
+
+**Reading it.** A reader MAY build its manifest for a writer from `sourcesOf` and `getAssociation` (or the
+`AssociationCreated` events). Each association gives one source: the storage contract's chain, `contract` = the
+initiator, `blocks[0]` = `firstBlock`, and the `events` and `fields` decoded from `source`. A reader MUST reject an
+association whose `source` is not in canonical form or does not meet the rules of Sources. The signed record cannot
+change after signing, so it carries no last block: a source lends until its association's `revokedAt`, and its last
+block is the last block with a time at or before `revokedAt`. That includes the block the revocation lands in when it
+takes effect at once: ERC-8092 treats the association as no longer valid from `revokedAt`, but loans in that block were
+made while the writer spoke for the source, and a manifest range that ends early would hide them. An unrevoked
+association still lends. The reader MUST re-check each record it uses (both signatures present and valid, and for the
+Delegated type the owner at the storing block) rather than trust the storage contract, and MUST still choose which
+writers it trusts: an association proves that a contract and a writer agreed, not that the lender is honest.
+
+**Where.** ERC-8092 asks for a canonical storage location. This profile will name one storage contract per chain
+once one is deployed; until then a reader names the storage contract it reads.
 
 ## Rationale
 
@@ -361,6 +435,11 @@ manifest range only.
   block makes omission visible within the declared sources; the rest is the reader's trust decision.
 - **One asset per chain.** Amounts in different tokens cannot be added. Keeping one asset per (writer, agent) chain
   keeps a chain's totals in one unit.
+- **On-chain manifests as ERC-8092 associations.** ERC-8092 already gives a signed, revocable record that binds two
+  accounts, with a payload selected by an `interfaceId`, so a manifest needs a payload and a lookup rather than a new
+  registry. Both sides sign: a writer cannot claim a contract that did not agree, and a contract cannot be claimed by a
+  writer its owner did not choose. Block bounds stay in the files and the logs, since a signed record cannot change
+  after signing.
 
 ## Backwards compatibility
 
@@ -426,7 +505,8 @@ The fork test uses the real registry and three real agents.
   - the lender's own default rate;
   - whether the lender's funds and the agent's funds come from the same place.
   
-  An on-chain lender registry is left as an open question.
+  On-chain manifests (see that section) bind a writer to its contracts; how much to trust a lender is still the
+  reader's call.
 - **A lying writer.** A writer key can post a false statement, but it cannot remove an earlier one. A false root
   fails a full rebuild. A skipped window or a dropped default at a declared source leaves a gap or a mismatch. A
   writer that stops posting leaves its record at its last window: readers say where that is, and a full rebuild
@@ -463,7 +543,8 @@ The fork test uses the real registry and three real agents.
 2. **Partial repayments** and loans that roll over.
 3. **Sources on several chains** in one statement. The reference reader reports a source on another chain as not
    rebuilt.
-4. **A lender registry**, and how readers weight lenders.
+4. **How readers weight lenders.** On-chain manifests answer which contracts a writer speaks for; whether to trust
+   the lender behind them is left open.
 5. **An on-chain view** that checks a Merkle proof against a statement's root. The root is in the file, not in
    registry storage, so a contract needs the file's bytes plus the `feedbackHash` from the `NewFeedback` event.
 6. **Tag names**, and whether a lender's summary score should also have a standard tag (`credit.score`).
