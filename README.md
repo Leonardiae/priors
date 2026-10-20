@@ -476,6 +476,7 @@ on ethereum/ERCs, so each draft carries a placeholder until then, and discussion
 | [Launch Declarations](https://github.com/priors-agents/erc-launch-declarations) | What a launchpad declares at launch (creator identity, allocations, liquidity lock, financing, fee recipient), on ERC-8376's launches | draft, not yet submitted to ethereum/ERCs |
 | [Agent Credit Backers](https://github.com/priors-agents/erc-credit-backer-hooks) | Third parties that stand behind a lender's line to an agent and take its loss | draft, not yet submitted to ethereum/ERCs |
 | [Credit-Matched Liquidity](https://github.com/priors-agents/erc-credit-matched-liquidity) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first (reference not audited) | draft, not yet submitted to ethereum/ERCs |
+| [Agent Income Statements](https://github.com/priors-agents/erc-agent-income-statements) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | draft, not yet submitted to ethereum/ERCs |
 
 ## Repository
 
