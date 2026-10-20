@@ -464,7 +464,8 @@ answer and identical everywhere.
 The parts of Priors that another lender, a wallet or a reader would need are written up as draft ERCs, each with a
 reference implementation and tests. Each carries the next ERC number that was free on 2026-10-20, ERC-8449 to
 ERC-8458; none is submitted yet, and the ERC editors confirm each number, or assign another, when its pull request opens
-on ethereum/ERCs. Discussion opens on Ethereum Magicians first.
+on ethereum/ERCs. Each is discussed on Ethereum Magicians; the credit profile's thread is
+[ERC-8449](https://ethereum-magicians.org/t/erc-8449-credit-history-for-erc-8004-agents/30022).
 
 | Draft | What it covers | State |
 |---|---|---|
