@@ -1,9 +1,8 @@
 ---
-eip: 8449
 title: Credit history for ERC-8004 agents
 description: A profile of the ERC-8004 Reputation Registry for loan outcomes that any reader can rebuild from the lender's own logs
 author: Priors contributors (@priors_trade)
-discussions-to: https://ethereum-magicians.org/t/erc-8449-credit-history-for-erc-8004-agents/30022
+discussions-to: https://ethereum-magicians.org/t/erc-tba-credit-history-for-erc-8004-agents/30022
 status: Draft (pre-submission, 2026-10-07)
 type: Standards Track
 category: ERC

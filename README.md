@@ -462,23 +462,23 @@ answer and identical everywhere.
 ## Standards
 
 The parts of Priors that another lender, a wallet or a reader would need are written up as draft ERCs, each with a
-reference implementation and tests. Each carries the next ERC number that was free on 2026-10-20, ERC-8449 to
-ERC-8458; none is submitted yet, and the ERC editors confirm each number, or assign another, when its pull request opens
-on ethereum/ERCs. Each is discussed on Ethereum Magicians; the credit profile's thread is
-[ERC-8449](https://ethereum-magicians.org/t/erc-8449-credit-history-for-erc-8004-agents/30022).
+reference implementation and tests. None is submitted yet: the ERC editors assign a number when a pull request opens
+on ethereum/ERCs, so each draft carries a placeholder until then. Each is discussed on Ethereum Magicians first; the
+credit profile's thread is
+[ERC-TBA: Credit history for ERC-8004 agents](https://ethereum-magicians.org/t/erc-tba-credit-history-for-erc-8004-agents/30022).
 
 | Draft | What it covers | State |
 |---|---|---|
-| [ERC-8449 Credit history for ERC-8004 agents](docs/ERC-8004-CREDIT.md) | Loan outcomes as ERC-8004 feedback that any reader can rebuild from the lender's own logs, with on-chain manifests as ERC-8092 associations | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8450 Agent Credit Lines](https://github.com/priors-agents/ERC-8450) | One interface to quote, borrow, repay and default against any lender to agent identities | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8451 Agent Repay-First Payees](https://github.com/priors-agents/ERC-8451) | An agent's revenue address that pays its creditors before its owner, and token holders after them | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8452 Agent Default Registry](https://github.com/priors-agents/ERC-8452) | Lender-reported defaults that any contract can count against the reporters it trusts | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8453 Creator Fee Rights](https://github.com/priors-agents/ERC-8453) | A launched token's creator fee stream, with a recipient only the recipient can change, so it can be pledged | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8454 Liquidity Locks](https://github.com/priors-agents/ERC-8454) | One interface for any contract that locks pool liquidity, read by scanners, launchpads and lenders | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8455 Launch Declarations](https://github.com/priors-agents/ERC-8455) | What a launchpad declares at launch (creator identity, allocations, liquidity lock, financing, fee recipient), on ERC-8376's launches | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8456 Agent Credit Backers](https://github.com/priors-agents/ERC-8456) | Third parties that stand behind a lender's line to an agent and take its loss | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8457 Credit-Matched Liquidity](https://github.com/priors-agents/ERC-8457) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first (reference not audited) | draft, not yet submitted to ethereum/ERCs |
-| [ERC-8458 Agent Income Statements](https://github.com/priors-agents/ERC-8458) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | draft, not yet submitted to ethereum/ERCs |
+| [Credit history for ERC-8004 agents](docs/ERC-8004-CREDIT.md) | Loan outcomes as ERC-8004 feedback that any reader can rebuild from the lender's own logs, with on-chain manifests as ERC-8092 associations | draft, not yet submitted to ethereum/ERCs |
+| [Agent Credit Lines](https://github.com/priors-agents/erc-agent-credit-lines) | One interface to quote, borrow, repay and default against any lender to agent identities | draft, not yet submitted to ethereum/ERCs |
+| [Agent Repay-First Payees](https://github.com/priors-agents/erc-repay-first-payees) | An agent's revenue address that pays its creditors before its owner, and token holders after them | draft, not yet submitted to ethereum/ERCs |
+| [Agent Default Registry](https://github.com/priors-agents/erc-agent-default-registry) | Lender-reported defaults that any contract can count against the reporters it trusts | draft, not yet submitted to ethereum/ERCs |
+| [Creator Fee Rights](https://github.com/priors-agents/erc-creator-fee-rights) | A launched token's creator fee stream, with a recipient only the recipient can change, so it can be pledged | draft, not yet submitted to ethereum/ERCs |
+| [Liquidity Locks](https://github.com/priors-agents/erc-liquidity-locks) | One interface for any contract that locks pool liquidity, read by scanners, launchpads and lenders | draft, not yet submitted to ethereum/ERCs |
+| [Launch Declarations](https://github.com/priors-agents/erc-launch-declarations) | What a launchpad declares at launch (creator identity, allocations, liquidity lock, financing, fee recipient), on ERC-8376's launches | draft, not yet submitted to ethereum/ERCs |
+| [Agent Credit Backers](https://github.com/priors-agents/erc-credit-backer-hooks) | Third parties that stand behind a lender's line to an agent and take its loss | draft, not yet submitted to ethereum/ERCs |
+| [Credit-Matched Liquidity](https://github.com/priors-agents/erc-credit-matched-liquidity) | A lender funds the quote side of a holder's pool position in an escrow, repaid from fees first (reference not audited) | draft, not yet submitted to ethereum/ERCs |
+| [Agent Income Statements](https://github.com/priors-agents/erc-agent-income-statements) | Public, chained statements of what an agent's ERC-8004 wallet received, one leaf per transfer, rebuildable from the token's logs | draft, not yet submitted to ethereum/ERCs |
 
 ## Repository
 
