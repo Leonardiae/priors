@@ -11,6 +11,8 @@ from the agent's balance and, only when that is short, borrows the difference fr
 pays x402 v1 `402`s; a `402` that offers only x402 v2 is refused (`BAD_402` or `NO_USDG_REQUIREMENT`) before
 anything is signed or borrowed. For x402 v2 (for example the paid API at `api.priors.trade`), `createPayer` in
 [`@priors/x402`](../packages/x402) pays the same way and borrows the gap under the same rules.
+Which sellers and facilitators the payer reaches (Robinhood Chain, a Base float, the Vantis gateway, Dexter), live or
+mocked: [X402-ROUTES.md](X402-ROUTES.md).
 
 ## Using it
 

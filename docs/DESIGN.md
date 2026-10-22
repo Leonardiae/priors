@@ -15,7 +15,7 @@ Agents need to decide whether to trust other agents. ERC-8004 gives every agent 
 
 Repaid debt is different. To produce a repayment record an agent must borrow real money, hold it, and give it back with a fee. The only way to fake that is to actually do it, which is not faking.
 
-Priors is a small on-chain credit pool that lends unsecured USDG (Robinhood Chain's dollar; any 6-decimal stablecoin works) to ERC-8004 agents and publishes every repayment and default. From that record it computes a trust score anyone can verify, query, and recompute.
+Pool v1 (now paused) was a small on-chain credit pool that lent unsecured USDG (Robinhood Chain's dollar; any 6-decimal stablecoin works) to ERC-8004 agents and published every repayment and default. From that record it computed a trust score anyone can verify, query, and recompute.
 
 ## Actors
 
