@@ -7,7 +7,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 // PRIORS_X402=<an installed @priors/x402's directory> runs these checks on that copy, as published
 const X402 = process.env.PRIORS_X402 ? pathToFileURL(`${process.env.PRIORS_X402}/index.mjs`).href : "../packages/x402/index.mjs";
-const { createResourceServer, recordGate, payerOf, robinhood } = await import(X402);
+const { createResourceServer, recordGate, recordFromCheck, payerOf, robinhood } = await import(X402);
 
 const GOOD = "0x1111111111111111111111111111111111111111";
 const DEFAULTED = "0x2222222222222222222222222222222222222222";
@@ -141,6 +141,32 @@ await t("a record that cannot be read refuses (never serves on a guess), and rea
   const g = recordGate({ fetchImpl });
   await g.recordOf(GOOD); await g.recordOf(GOOD);
   assert.equal(apiCalls - before, 1);
+});
+
+await t("a 200 that is not a check API answer refuses as an unreadable record, never as a payer with no record; agents: [] is still an unknown payer", async () => {
+  const bodies = ["{}", '{"error":"x"}', '{"agents":null}', '{"agents":{}}', "<html>down</html>", "null", "[]",
+    '{"error":"index unavailable","agents":[]}', '{"agents":[{"agentId":8}]}', '{"agents":[{"agentId":8,"record":{"loansRepaid":9,"isDefaulted":true}}]}'];
+  for (const body of bodies) {
+    const fac = spyFacilitator();
+    const answer = async () => new Response(body, { status: 200 });
+    const s = recordGate({ fetchImpl: answer }).attach(createResourceServer({ facilitatorClient: fac }));
+    await s.initialize();
+    const r = await pay(s, DEFAULTED, 10_000);
+    assert.equal(r.verified, false, `${body}: verified`);
+    assert.match(String(r.reason), /priors_record_unavailable/, body);
+    assert.deepEqual(fac.calls, [], body);
+    await assert.rejects(recordGate({ fetchImpl: answer }).recordOf(DEFAULTED), /check API/, body);
+    if (body.startsWith("<")) continue;
+    assert.throws(() => recordFromCheck(JSON.parse(body)), /check API/, body);
+  }
+  // an entry with its default flag renamed bought the tier price of its loansRepaid: now the base price
+  const skewed = async () => new Response(JSON.stringify({ agents: [{ agentId: 7, record: { loansRepaid: 5 } }] }), { status: 200 });
+  const price = recordGate({ fetchImpl: skewed, basePrice: "$0.02", tiers: [{ minRepaid: 3, price: "$0.01" }] }).tierPrice();
+  assert.equal(await price({ adapter: { getHeader: (h) => (h === "x-payer" ? GOOD : undefined) } }), "$0.02");
+  // the explicit, valid empty list: a payer Priors does not know, served under the default policy as before
+  assert.deepEqual(recordFromCheck({ verdict: "no record", agents: [] }), { known: false, agents: [], defaulted: false, loansRepaid: 0, score: null });
+  const { s } = await server({});
+  assert.deepEqual(await pay(s, NEW, 10_000), { verified: true, settled: true });
 });
 
 await t("attach returns the server, so the README's tier sample keeps the gate in its own name", async () => {

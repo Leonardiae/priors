@@ -21,6 +21,7 @@ const AGENTS = { 7: { owner: W, defaulted: true, loansRepaid: 3n }, 9: { owner: 
 const CONTROLS = { 7: [W], 9: [W, D], 11: [Z], 12: [C] };
 const MARKS = { [W.toLowerCase()]: 1n, [C.toLowerCase()]: 1n };
 const CUSTODIAN = { [C.toLowerCase()]: true };
+let registryDown = false; // the registry's ownerOf fails (an RPC error), while the pool still answers
 
 const pool = new ethers.Interface(POOL_ABI), lens = new ethers.Interface(LENS_ABI), vault = new ethers.Interface(STOCK_VAULT_ABI);
 const registry = new ethers.Interface(["function ownerOf(uint256) view returns (address)"]);
@@ -48,7 +49,7 @@ function answer(data) {
         ownerDefaults: () => [MARKS[String(id).toLowerCase()] || 0n],
         custodian: () => [!!CUSTODIAN[String(id).toLowerCase()]],
         score: () => [AGENTS[Number(id)] && !AGENTS[Number(id)].defaulted ? 400n : 0n],
-        ownerOf: () => [AGENTS[Number(id)] ? AGENTS[Number(id)].owner : ethers.ZeroAddress],
+        ownerOf: () => { if (registryDown) throw new Error("registry read failed"); return [AGENTS[Number(id)] ? AGENTS[Number(id)].owner : ethers.ZeroAddress]; },
       }[fn]();
       return iface.encodeFunctionResult(fn, val);
     }
@@ -92,6 +93,15 @@ try {
   ok("chain source: an unmarked payer is served, naming its clean agent or none (refuseDefaulted only)");
   assert.equal(await judgeFor(W, "9", { refuseDefaulted: false }), "accepted");
   ok("chain source: with refuseDefaulted off, the mark is not a refusal");
+  // the pool says D controls #9, so #9 has an owner; a registry read of it that fails is an unreadable record, not an
+  // owner without a mark (before 0.7.1 the owner's mark was skipped and D, the key of a marked owner's agent, was served)
+  registryDown = true;
+  try {
+    assert.equal(await judgeFor(D, "9"), "priors_record_unavailable");
+    assert.equal(await judgeFor(Z, "11"), "priors_record_unavailable");
+  } finally { registryDown = false; }
+  assert.equal(await judgeFor(D, "9"), "priors_payer_defaulted");
+  ok("chain source: when the named agent's owner cannot be read, the payment is refused as unreadable, never judged without the owner's mark");
 } finally {
   srv.close();
 }
