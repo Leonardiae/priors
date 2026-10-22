@@ -19,6 +19,7 @@ export const TOPICS = Object.freeze({
   TRANSFER: ethers.id("Transfer(address,address,uint256)"),
   AUTH_USED: ethers.id("AuthorizationUsed(address,bytes32)"),
   REPAID: ethers.id("Repaid(uint256,uint256,uint256,uint256,address)"),
+  AUTOREPAID: ethers.id("AutoRepaid(uint256,uint256,address,uint256,uint256,address,uint256,uint256)"),
   SETTLED: ethers.id("Settled()"),
   SETTLED_WITH_PERMIT: ethers.id("SettledWithPermit()"),
 });
@@ -314,13 +315,39 @@ export async function readAgentWallets(provider, registry, agentIds, { batch = 2
   return out;
 }
 
+const AUTOREPAID_IFACE = new ethers.Interface(["event AutoRepaid(uint256 indexed loanId, uint256 indexed agentId, address wallet, uint256 fromWallet, uint256 fromWalletSavings, address owner, uint256 fromOwner, uint256 fromOwnerSavings)"]);
+
 /**
- * Who paid each repayment: the `payer` of `pool`'s Repaid log (msg.sender of repay) in the given transaction.
- * `loans`: [{loanId, tx}]. Stops at `deadline`. Returns { [loanId]: address lowercase | null (looked, not found) };
- * a loan left out was not looked at.
+ * Who paid a repayment AutoRepay made: the addresses its AutoRepaid log for `loanId`, in the
+ * same transaction, names as having paid something: the agent's wallet (its USDG or its savings), the loan's owner
+ * (the same), or both. Read only from `autoRepay`'s own logs. Returns one address (lowercase), both as an array (the
+ * repayment counts as the agent's own only if each is), or null when no such log is there.
  */
-export async function readRepayers(provider, pool, loans, deadline = Infinity) {
+export function autoRepaidPayers(logs, autoRepay, loanId) {
+  for (const l of logs) {
+    if (lc(l.address) !== lc(autoRepay) || l.topics[0] !== TOPICS.AUTOREPAID) continue;
+    const ev = AUTOREPAID_IFACE.parseLog(l);
+    if (Number(ev.args.loanId) !== Number(loanId)) continue;
+    const who = [];
+    if (ev.args.fromWallet + ev.args.fromWalletSavings > 0n) who.push(lc(ev.args.wallet));
+    if (ev.args.fromOwner + ev.args.fromOwnerSavings > 0n) who.push(lc(ev.args.owner));
+    const set = uniq(who);
+    return set.length === 0 ? null : set.length === 1 ? set[0] : set;
+  }
+  return null;
+}
+
+/**
+ * Who paid each repayment: the `payer` of `pool`'s Repaid log (msg.sender of repay) in the given transaction; for a
+ * repayment whose payer is one of `autoRepay` (the deployed AutoRepays: v2's, `autoRepay` in deployments/4663.v2.json,
+ * and the retired v1's, `autoRepayV1` in packages/mcp/deployments/4663.v2.json; nothing else; one address or a list),
+ * the addresses that paid through it, read
+ * from that contract's own AutoRepaid log (autoRepaidPayers). `loans`: [{loanId, tx}]. Stops at `deadline`. Returns
+ * { [loanId]: address lowercase | [addresses] | null (looked, not found) }; a loan left out was not looked at.
+ */
+export async function readRepayers(provider, pool, loans, deadline = Infinity, { autoRepay = null } = {}) {
   const iface = new ethers.Interface(["event Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, address payer)"]);
+  const pinned = new Set([].concat(autoRepay || []).filter(isAddr).map(lc));
   const out = {};
   for (const { loanId, tx } of loans) {
     if (past(deadline)) break;
@@ -330,7 +357,9 @@ export async function readRepayers(provider, pool, loans, deadline = Infinity) {
     for (const l of r.logs) {
       if (lc(l.address) !== lc(pool) || l.topics[0] !== TOPICS.REPAID) continue;
       const ev = iface.parseLog(l);
-      if (Number(ev.args.loanId) === Number(loanId)) out[loanId] = lc(ev.args.payer);
+      if (Number(ev.args.loanId) !== Number(loanId)) continue;
+      const payer = lc(ev.args.payer);
+      out[loanId] = pinned.has(payer) ? autoRepaidPayers(r.logs, payer, loanId) : payer;
     }
   }
   return out;
@@ -359,14 +388,15 @@ const addUnique = (list, items) => { const seen = new Set(list.map((x) => x.id))
  *   payments      signed USDG payments to declared wallets since `fromBlock`
  *   transfers     USDG sent from agent-side wallets (owners, declared wallets, `extraWallets`) to those payers, over
  *                 the whole chain from `transfersFrom`, for netting
- *   repayers      who repaid each v2 loan that overlaps a payment to its agent
+ *   repayers      who repaid each v2 loan that overlaps a payment to its agent (through `autoRepay`, the deployed
+ *                 AutoRepay: the addresses that paid through it, readRepayers)
  * A new wallet or payer is backfilled on its own (only the new pairs are read from the start) while the main cursors
  * keep moving, so new arrivals never hold everyone else back: `pending` names the payers and agent-side wallets whose
  * netting is still being read, and their income waits (sdk/score-v2-inputs.mjs `pending`). Everything stops cleanly
  * at `deadline` (ms epoch) and resumes on the next call. `prev` is the last returned state (plain JSON) or null.
  * Returns { state, complete, pending: { payers, wallets } }: publish scores only from a complete index.
  */
-export async function updateIncome(provider, prev, { usdg, registry, pool, snapshot, extraWallets = [], fromBlock, head, now, deadline = Infinity, ...opts }) {
+export async function updateIncome(provider, prev, { usdg, registry, pool, autoRepay = null, snapshot, extraWallets = [], fromBlock, head, now, deadline = Infinity, ...opts }) {
   const P = { ...INDEX_DEFAULTS, ...Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)) };
   const fresh = () => ({ v: 2, fromBlock, transfersFrom: P.transfersFrom, agentWallets: {}, walletFailures: {}, walletsAt: 0,
     wallets: [], payments: [], paymentsTo: fromBlock - 1, paymentBackfills: [], permit2: true, permit2Backfill: null,
@@ -424,6 +454,69 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
     state.paymentsTo = Math.max(state.paymentsTo, r.scannedTo);
     tune(r, from);
   }
+  const keep = () => { state.payments = state.payments.filter((p) => Number(p.at) >= now - P.retentionDays * DAY).sort((x, y) => x.block - y.block || (x.id < y.id ? -1 : 1)); };
+  keep();
+
+  // 3. money sent back to the payers: new payers and new agent-side wallets backfilled on their own
+  const track = () => {
+    const paid = new Map();
+    for (const p of state.payments) paid.set(p.payer, (paid.get(p.payer) || 0n) + BigInt(p.amount));
+    const payers = [...paid].filter(([, v]) => v >= BigInt(P.minPayerAtomic)).map(([k]) => k).sort();
+    const from = uniq([...snapshot.agents.map((a) => lc(a.owner)), ...declared, ...extraWallets.map(lc)]).filter(isAddr).sort();
+    const fromSet = new Set(from), payerSet = new Set(payers);
+    const goneFrom = new Set(state.from.filter((w) => !fromSet.has(w))), gonePayers = new Set(state.payers.filter((x) => !payerSet.has(x)));
+    if (goneFrom.size || gonePayers.size) {
+      state.transfers = state.transfers.filter((x) => !goneFrom.has(x.from) && !gonePayers.has(x.to));
+      state.transferBackfills = state.transferBackfills
+        .map((bf) => ({ ...bf, from: bf.from.filter((w) => !goneFrom.has(w)), to: bf.to.filter((x) => !gonePayers.has(x)) }))
+        .filter((bf) => bf.from.length && bf.to.length);
+    }
+    const oldFrom = state.from.filter((w) => fromSet.has(w)), oldPayers = state.payers.filter((x) => payerSet.has(x));
+    const newFrom = from.filter((w) => !oldFrom.includes(w)), newPayers = payers.filter((x) => !oldPayers.includes(x));
+    if (state.transfersTo >= P.transfersFrom) {
+      if (newPayers.length && oldFrom.length) state.transferBackfills.push({ kind: "payers", from: oldFrom, to: newPayers, next: P.transfersFrom, until: state.transfersTo });
+      if (newFrom.length && payers.length) state.transferBackfills.push({ kind: "wallets", from: newFrom, to: payers, next: P.transfersFrom, until: state.transfersTo });
+    }
+    state.from = from;
+    state.payers = payers;
+    if (!payers.length) state.transfersTo = Math.max(state.transfersTo, head);
+    return { from, payers };
+  };
+  const { from, payers } = track();
+  if (payers.length && state.transfersTo < head && !past(deadline)) {
+    const r = await scanTransfers(provider, { usdg, from, to: payers, fromBlock: state.transfersTo + 1, toBlock: head, deadline });
+    addUnique(state.transfers, r.transfers);
+    state.transfersTo = Math.max(state.transfersTo, r.scannedTo);
+  }
+
+  // 4. who repaid the loans that overlap a payment to their agent's declared wallet: read for the payments known so far,
+  // and again after the backfills for the ones they found. Returns how many are still unread (they hold the scores).
+  const repaidTx = new Map();
+  for (const e of snapshot.events || []) if (e.kind === "Repaid" && e.era === "v2") repaidTx.set(Number(e.loanId), e.tx);
+  const repayers = async () => {
+    const paidAt = new Map(); // agentId -> [payment times]
+    for (const a of snapshot.agents) {
+      const w = lc(state.agentWallets[a.id]);
+      if (!isAddr(w)) continue;
+      for (const p of state.payments) if (p.payTo === w) { if (!paidAt.has(Number(a.id))) paidAt.set(Number(a.id), []); paidAt.get(Number(a.id)).push(Number(p.at)); }
+    }
+    const wanted = snapshot.loans.filter((l) => l.era === "v2" && l.status === "repaid" && !(l.id in state.repayers) && repaidTx.has(Number(l.id))
+      && (paidAt.get(Number(l.agentId)) || []).some((t) => t >= Number(l.issuedAt) && t <= Number(l.closedAt)));
+    let left = wanted.length;
+    if (wanted.length && !past(deadline)) {
+      const got = await readRepayers(provider, pool, wanted.slice(0, P.maxRepayerReads).map((l) => ({ loanId: Number(l.id), tx: repaidTx.get(Number(l.id)) })), deadline, { autoRepay });
+      for (const [k, v] of Object.entries(got)) { state.repayers[k] = v; left--; }
+    }
+    return left;
+  };
+  let pendingRepayers = await repayers();
+
+  /* The backfills, last, with what is left of the run: what the cursors above read is what a score needs now, and a
+     backfill can take every run for days (on 2026-10-10 nine new wallets' payment backfills, 10-13 million blocks each,
+     took the whole budget of every run, and once a first payer appeared the netting cursor behind them never moved, so
+     no score was published). What a payment backfill finds is looked at again below, as if a cursor had found it: its
+     payer is tracked (its netting read on its own before its income counts, `pending`), and its agent's repaid loans'
+     repayers are read, or the scores wait for them. */
   for (const bf of state.paymentBackfills) {
     if (past(deadline) || scanStatus.stopped === "rate-limited") break;
     const from = bf.next;
@@ -442,35 +535,9 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
   }
   state.paymentsChunk = chunk;
   state.paymentBackfills = state.paymentBackfills.filter((bf) => bf.next <= bf.until);
-  state.payments = state.payments.filter((p) => Number(p.at) >= now - P.retentionDays * DAY).sort((x, y) => x.block - y.block || (x.id < y.id ? -1 : 1));
-
-  // 3. money sent back to the payers: new payers and new agent-side wallets backfilled on their own
-  const paid = new Map();
-  for (const p of state.payments) paid.set(p.payer, (paid.get(p.payer) || 0n) + BigInt(p.amount));
-  const payers = [...paid].filter(([, v]) => v >= BigInt(P.minPayerAtomic)).map(([k]) => k).sort();
-  const from = uniq([...snapshot.agents.map((a) => lc(a.owner)), ...declared, ...extraWallets.map(lc)]).filter(isAddr).sort();
-  const fromSet = new Set(from), payerSet = new Set(payers);
-  const goneFrom = new Set(state.from.filter((w) => !fromSet.has(w))), gonePayers = new Set(state.payers.filter((x) => !payerSet.has(x)));
-  if (goneFrom.size || gonePayers.size) {
-    state.transfers = state.transfers.filter((x) => !goneFrom.has(x.from) && !gonePayers.has(x.to));
-    state.transferBackfills = state.transferBackfills
-      .map((bf) => ({ ...bf, from: bf.from.filter((w) => !goneFrom.has(w)), to: bf.to.filter((x) => !gonePayers.has(x)) }))
-      .filter((bf) => bf.from.length && bf.to.length);
-  }
-  const oldFrom = state.from.filter((w) => fromSet.has(w)), oldPayers = state.payers.filter((x) => payerSet.has(x));
-  const newFrom = from.filter((w) => !oldFrom.includes(w)), newPayers = payers.filter((x) => !oldPayers.includes(x));
-  if (state.transfersTo >= P.transfersFrom) {
-    if (newPayers.length && oldFrom.length) state.transferBackfills.push({ kind: "payers", from: oldFrom, to: newPayers, next: P.transfersFrom, until: state.transfersTo });
-    if (newFrom.length && payers.length) state.transferBackfills.push({ kind: "wallets", from: newFrom, to: payers, next: P.transfersFrom, until: state.transfersTo });
-  }
-  state.from = from;
-  state.payers = payers;
-  if (!payers.length) state.transfersTo = Math.max(state.transfersTo, head);
-  else if (state.transfersTo < head && !past(deadline)) {
-    const r = await scanTransfers(provider, { usdg, from, to: payers, fromBlock: state.transfersTo + 1, toBlock: head, deadline });
-    addUnique(state.transfers, r.transfers);
-    state.transfersTo = Math.max(state.transfersTo, r.scannedTo);
-  }
+  keep();
+  track();
+  pendingRepayers = await repayers();
   for (const bf of state.transferBackfills) {
     if (past(deadline)) break;
     const r = await scanTransfers(provider, { usdg, from: bf.from, to: bf.to, fromBlock: bf.next, toBlock: bf.until, deadline });
@@ -478,23 +545,6 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, snaps
     bf.next = r.scannedTo + 1;
   }
   state.transferBackfills = state.transferBackfills.filter((bf) => bf.next <= bf.until);
-
-  // 4. who repaid the loans that overlap a payment to their agent's declared wallet
-  const paidAt = new Map(); // agentId -> [payment times]
-  for (const a of snapshot.agents) {
-    const w = lc(state.agentWallets[a.id]);
-    if (!isAddr(w)) continue;
-    for (const p of state.payments) if (p.payTo === w) { if (!paidAt.has(Number(a.id))) paidAt.set(Number(a.id), []); paidAt.get(Number(a.id)).push(Number(p.at)); }
-  }
-  const repaidTx = new Map();
-  for (const e of snapshot.events || []) if (e.kind === "Repaid" && e.era === "v2") repaidTx.set(Number(e.loanId), e.tx);
-  const wanted = snapshot.loans.filter((l) => l.era === "v2" && l.status === "repaid" && !(l.id in state.repayers) && repaidTx.has(Number(l.id))
-    && (paidAt.get(Number(l.agentId)) || []).some((t) => t >= Number(l.issuedAt) && t <= Number(l.closedAt)));
-  let pendingRepayers = wanted.length;
-  if (wanted.length && !past(deadline)) {
-    const got = await readRepayers(provider, pool, wanted.slice(0, P.maxRepayerReads).map((l) => ({ loanId: Number(l.id), tx: repaidTx.get(Number(l.id)) })), deadline);
-    for (const [k, v] of Object.entries(got)) { state.repayers[k] = v; pendingRepayers--; }
-  }
 
   // 5. size: under the store's value limit, pruning old payments first (never below `minKeepDays`)
   let size = JSON.stringify(state).length;

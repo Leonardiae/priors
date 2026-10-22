@@ -106,9 +106,13 @@ export function scoreV2(input, W = WEIGHTS) {
     cur.amount += amount;
     byPayer.set(k, cur);
   }
-  let incomeValue = 0, payers = 0, incomeUsdg = 0;
+  let incomeValue = 0, payers = 0, incomeUsdg = 0, receiptsUsdg = 0, receiptPayers = 0;
   for (const [, { amount, score }] of [...byPayer.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
     const usd = amount / USDG;
+    // receipts: every payer outside the cluster, dust and fresh wallets included, at face value. Shown as what the
+    // agent was paid; only the income below (capped, weighted, dust left out) counts toward the score.
+    receiptsUsdg += usd;
+    receiptPayers++;
     if (usd < C.income.minPayerUsdg) continue; // dust: a payer counts once it has paid 1 USDG in the window
     incomeValue += Math.min(usd, C.income.perPayerCapUsdg) * payerWeight(score, W);
     incomeUsdg += usd;
@@ -147,9 +151,23 @@ export function scoreV2(input, W = WEIGHTS) {
   if (rung >= 3 && comp.income >= R[4].minIncomePoints && payers >= R[4].minPayers) rung = 4;
 
   const components = Object.entries(comp).map(([key, points]) => ({ key, points: round1(points), max: C[key].max, why: C[key].why }));
-  const detail = { dollarDays: round1(dollarDays), seasonedLoans: seasoned, repaidByOthers, repaidFromIncome: round1(repaidFromIncome), lateRepayments: late, ageDays, distinctPayers: payers, incomeUsdg: round1(incomeUsdg) };
+  const detail = { dollarDays: round1(dollarDays), seasonedLoans: seasoned, repaidByOthers, repaidFromIncome: round1(repaidFromIncome), lateRepayments: late, ageDays, distinctPayers: payers, incomeUsdg: round1(incomeUsdg), receiptsUsdg: round1(receiptsUsdg), receiptPayers };
   // incomeUsdg: the x402 USDG of the payers that count (in the window, netted, dust left out), before caps and weights
-  return { version: W.version, agentId: id, score, rung, rungName: R[rung].name, components, penalties, detail, flags };
+  // receiptsUsdg / receiptPayers: every payer outside the cluster in the window (netted), dust and fresh wallets included
+  // the next rung and how far the agent is on each of its conditions (have / need), from the same figures the rung is
+  // judged on just above: what an owner can act on. Null at the top and after a default. `blocked`: a condition that can
+  // no longer be met ("late": a late repayment keeps Proven closed). It adds nothing to the score or the rung
+  let next = null;
+  if (!zeroed && rung < R.length - 1) {
+    const r = rung + 1, Rn = R[r];
+    const need = (key, have, want) => ({ key, have, need: want, met: have >= want });
+    const needs = r === 1 ? [need("backedRepaid", repaidByOthers, Rn.minRepaid)]
+      : r === 2 ? [need("backedRepaid", repaidByOthers, Rn.minRepaid), need("spanDays", Math.floor(span), Rn.minSpanDays), { key: "late", have: late, need: 0, met: late === 0 }]
+        : r === 3 ? [need("recordScore", recordScore, Rn.minScore), need("daysSinceFirst", Math.floor(sinceFirst), Rn.minDays)]
+          : [need("incomePoints", Math.floor(comp.income), Rn.minIncomePoints), need("payers", payers, Rn.minPayers)];
+    next = { rung: r, name: Rn.name, needs, blocked: r === 2 && late > 0 ? "late" : null };
+  }
+  return { version: W.version, agentId: id, score, rung, rungName: R[rung].name, components, penalties, detail, flags, next };
 }
 
 /** Deterministic JSON (sorted keys) for hashing inputs, so a published score can be checked against its inputs. */

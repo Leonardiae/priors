@@ -32,6 +32,9 @@
 import { scoreV2, payerWeight, DEFAULT_WEIGHTS } from "./score-v2.mjs";
 
 const lc = (a) => String(a || "").toLowerCase();
+/** Whether a loan was repaid by the agent's own wallets: `r` is the one address that repaid, or the addresses that paid
+ *  through AutoRepay (sdk/x402-income.mjs readRepayers), each of which must be one of `own`. */
+export const repaidByOwn = (own, r) => { const all = [].concat(r ?? []); return all.length > 0 && all.every((a) => own.has(lc(a))); };
 const ZERO = "0x0000000000000000000000000000000000000000";
 const isAddr = (a) => { const x = lc(a).trim(); return x !== "" && x !== ZERO && x !== "null" && x !== "undefined"; }; // a usable wallet key
 const DAY = 86400;
@@ -118,7 +121,9 @@ function ownershipChangedAt(agent, loans, now, transferredAt) {
  *   agentWallets  { [agentId]: address | null }    declared payment wallets (ERC-8004 getAgentWallet); income is
  *                                                  matched on these only
  *   transfers     [{ from, to, amount, at }]       USDG sent from agent-side wallets to payers (netted out)
- *   repayers      { [loanId]: address }            who repaid each v2 loan (Repaid.payer); v2 loan ids only, never
+ *   repayers      { [loanId]: address | [address] } who repaid each v2 loan (Repaid.payer; for a repayment
+ *                                                  through AutoRepay, the address or addresses that paid through it:
+ *                                                  all of them must be the agent's own); v2 loan ids only, never
  *                                                  applied to a v1 loan with the same id
  *   payerScores   { [address]: score }             a payer's own v2 score (scoreAll fills it)
  *   backerOwnerSince { [agentId]: seconds }        the last registry transfer of each backer id (sdk/x402-income.mjs
@@ -135,9 +140,9 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   if (!Number.isFinite(t) || t <= 0) throw new TypeError("score-v2 inputs: pass `now` (or a snapshot with meta.timestamp)");
   const K = makeClusters(snapshot, links, agentWallets);
   const minBackerAge = weights.backers.minAgeDays * DAY;
-  // the pool's treasury and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the
-  // snapshot's meta)
-  const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.seatVaultV4AgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
+  // the pool's treasury (and treasury v5, once the snapshot names it: a line moved there is the treasury's as before)
+  // and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the snapshot's meta)
+  const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.treasuryV5AgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.seatVaultV4AgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
   // roots that lend against the borrower's own collateral: never someone else's risk
   const ownRoots = new Set((weights.backers.ownCollateralRoots || []).includes("stockVault") && Number(snapshot.meta?.stockVaultAgentId) > 0 ? [Number(snapshot.meta.stockVaultAgentId)] : []);
   // v1 loans predate the loan's own sponsorId: their backer is in the FeeSplit event of the repayment
@@ -233,7 +238,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
     const order = raw.map((_, i) => i).filter((i) => {
       const l = raw[i];
       return l.era !== "v1" && l.status === "repaid" && loans[i].backedByOthers && Number(l.closedAt) <= Number(l.dueAt)
-        && Number(l.issuedAt) >= since && own.has(lc(repayers[l.id]));
+        && Number(l.issuedAt) >= since && repaidByOwn(own, repayers[l.id]);
     }).sort((x, y) => Number(raw[x].closedAt) - Number(raw[y].closedAt) || Number(raw[x].id) - Number(raw[y].id));
     for (const i of order) {
       const l = raw[i];

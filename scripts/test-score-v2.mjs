@@ -2,7 +2,7 @@
 //   node scripts/test-score-v2.mjs
 import assert from "node:assert/strict";
 import { scoreV2, canonical, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
-import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
+import { buildInputs, scoreAll, repaidByOwn } from "../sdk/score-v2-inputs.mjs";
 
 const DAY = 86400, NOW = 1_800_000_000, $ = (n) => Math.round(n * 1e6);
 let passed = 0;
@@ -205,6 +205,12 @@ check("F16 the growth seat vault (V4) backs from day one, as V3 and the treasury
   assert.equal(one(mk({}), 1).detail.repaidByOthers, 0, "a root a day old, not a protocol backer: the agent's own");
   assert.equal(one(mk({ seatVaultV4AgentId: 2 }), 1).detail.repaidByOthers, 3, "the snapshot's V4 root: backs from day one");
 });
+check("F16b treasury v5 (where an agent moves for its $25 raise) backs from day one, as the treasury does, once the snapshot names its root; a moved line's loans stay someone else's risk", () => {
+  const mk = (meta) => ({ meta: { timestamp: NOW, ...meta }, events: [], agents: [agent(1, "0xA", { sponsor: 2 }), agent(2, "0xT5", { isRoot: true, enrolledAt: NOW - 1 * DAY })],
+    loans: [0, 1, 2].map((i) => repaid(1, 2, 50, 25 - i * 8, 7)) });
+  assert.equal(one(mk({}), 1).detail.repaidByOthers, 0, "without the snapshot naming it: a root a day old");
+  assert.equal(one(mk({ treasuryV5AgentId: 2 }), 1).detail.repaidByOthers, 3, "the snapshot's treasury v5 root: backs from day one");
+});
 
 check("F6 a v1 loan's backer comes from its FeeSplit event, not from the agent's sponsor today", () => {
   const s = { meta: { timestamp: NOW }, agents: [agent(1, "0xA", { sponsor: 3 }), agent(2, "0xA", { isRoot: true }), agent(3, "0xB", { isRoot: true })],
@@ -258,6 +264,81 @@ check("F15 the score doesn't depend on the order of loans", () => {
   const loans = Array.from({ length: 50 }, (_, i) => ({ ...loan(3.33 + i * 0.07, 1 / 3 + i / 17), issuedAt: NOW - (40 + i / 7) * DAY }));
   const a = scoreV2(base({ loans })), b = scoreV2(base({ loans: [...loans].reverse() }));
   assert.deepEqual(a, b);
+});
+
+check("Autopay: a repayment through AutoRepay is the agent's own only if every address that paid is", () => {
+  const own = new Set(["0x00000000000000000000000000000000000000aa", "0x00000000000000000000000000000000000000bb"]);
+  assert.equal(repaidByOwn(own, "0x00000000000000000000000000000000000000AA"), true, "one address, any letter case");
+  assert.equal(repaidByOwn(own, ["0x00000000000000000000000000000000000000aa", "0x00000000000000000000000000000000000000bb"]), true, "the wallet and the owner");
+  assert.equal(repaidByOwn(own, ["0x00000000000000000000000000000000000000aa", "0x00000000000000000000000000000000000000cc"]), false, "one stranger is enough to lose it");
+  for (const none of [undefined, null, [], ""]) assert.equal(repaidByOwn(own, none), false);
+});
+
+check("the Autopay mapping changes no weight: the published weights are the same object as before (2.0.x)", () => {
+  // the mapping is an input rule only (who repaid); a weight change needs a new version and its 7-day notice
+  assert.match(String(W.version), /^2\.0\./);
+  assert.equal(W.components.riskTime.incomeRepaidBonus, 0.25);
+});
+
+check("receipts show every outside payer at face value, dust and fresh wallets included; only capped, weighted income scores", () => {
+  const r = scoreV2(base({ income: [
+    { payer: "0xa", amount: $(0.5), at: NOW - 2 * DAY },                  // dust: a receipt, not income
+    { payer: "0xb", amount: $(50), at: NOW - 3 * DAY },                   // a fresh wallet: full receipt, capped and half-weighted income
+    { payer: "0xc", amount: $(4), at: NOW - 4 * DAY, payerScore: 600 },
+  ] }));
+  assert.equal(r.detail.receiptPayers, 3);
+  assert.equal(r.detail.receiptsUsdg, 54.5);
+  assert.equal(r.detail.distinctPayers, 2);
+  assert.equal(r.detail.incomeUsdg, 54);
+});
+
+// ---- the next rung and how far the agent is on each of its conditions (what an owner can act on) ----
+const needOf = (r, key) => r.next.needs.find((n) => n.key === key);
+check("next from Unproven: Started, needing 1 backed repayment (self-backed loans count for nothing)", () => {
+  const r = scoreV2(base({ loans: [loan(50, 10, { others: false })] }));
+  assert.equal(r.rung, 0);
+  assert.deepEqual({ rung: r.next.rung, name: r.next.name, blocked: r.next.blocked }, { rung: 1, name: "started", blocked: null });
+  assert.deepEqual(r.next.needs, [{ key: "backedRepaid", have: 0, need: 1, met: false }]);
+});
+check("next from Started: Proven, with the backed repayments, the days they span and no late one", () => {
+  const r = scoreV2(base({ loans: [loan(20, 3, { ago: 10 }), loan(20, 3, { ago: 6 })] }));
+  assert.equal(r.rung, 1);
+  assert.equal(r.next.name, "proven");
+  assert.deepEqual(needOf(r, "backedRepaid"), { key: "backedRepaid", have: 2, need: 3, met: false });
+  // from the first backed loan's issue (10 days ago) to the last one's repayment (6 - 3 = 3 days ago)
+  assert.deepEqual(needOf(r, "spanDays"), { key: "spanDays", have: 7, need: 14, met: false });
+  assert.deepEqual(needOf(r, "late"), { key: "late", have: 0, need: 0, met: true });
+  assert.equal(r.next.blocked, null);
+});
+check("a late repayment blocks Proven for good: blocked 'late', and its condition unmet", () => {
+  const r = scoreV2(base({ loans: [loan(20, 8, { ago: 40 }), loan(20, 8, { ago: 30 }), loan(20, 8, { ago: 20 }), loan(20, 8, { ago: 10, late: true })] }));
+  assert.equal(r.rung, 1, "3 backed over 14+ days, but one late: Started");
+  assert.equal(r.next.blocked, "late");
+  assert.deepEqual(needOf(r, "late"), { key: "late", have: 1, need: 0, met: false });
+  assert.equal(needOf(r, "backedRepaid").met, true);
+  assert.equal(needOf(r, "spanDays").met, true);
+});
+check("next from Proven: Earned, by the record score (income left out) and the days since the first backed loan", () => {
+  const r = scoreV2(base({ loans: [loan(20, 8, { ago: 25 }), loan(20, 8, { ago: 18 }), loan(20, 8, { ago: 10 })] }));
+  assert.equal(r.rung, 2);
+  assert.equal(r.next.name, "earned");
+  assert.equal(needOf(r, "recordScore").need, 300);
+  assert.equal(needOf(r, "daysSinceFirst").have, 25);
+  assert.equal(needOf(r, "daysSinceFirst").need, 30);
+});
+check("next from Earned: Income-backed, by income points and payers; none at the top and none after a default", () => {
+  const earned = scoreV2(base({ loans: Array.from({ length: 5 }, (_, i) => loan(50, 10, { ago: 60 - i * 11 })) }));
+  assert.equal(earned.rung, 3);
+  assert.equal(earned.next.name, "income-backed");
+  assert.deepEqual(earned.next.needs.map((n) => [n.key, n.have, n.need]), [["incomePoints", 0, 50], ["payers", 0, 3]]);
+  assert.equal(scoreV2(base({ defaulted: true, loans: [loan(50, 10)] })).next, null);
+});
+check("next adds nothing to the score: score, rung and components are what they were without it", () => {
+  for (const loans of [[], [loan(50, 10)], Array.from({ length: 5 }, (_, i) => loan(50, 10, { ago: 60 - i * 11 }))]) {
+    const { next, ...rest } = scoreV2(base({ loans }));
+    assert.equal(typeof next, "object");
+    assert.deepEqual(Object.keys(rest), ["version", "agentId", "score", "rung", "rungName", "components", "penalties", "detail", "flags"]);
+  }
 });
 
 console.log(`\n${passed} passed`);

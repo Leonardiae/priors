@@ -42,10 +42,11 @@ on data, it moves into the next on-chain version.
 
 **Backers.** A loan is "backed by someone else" when its backer is another owner's agent that had been on Priors for
 **30+ days** when the loan was issued, counted from its enrolment or, if later, from when its current owner took the
-id (registry transfers). The protocol's treasury and seat vaults (V3 and the growth seat vault V4, public ids in the
-snapshot) count from day one. A backer the record doesn't know counts as the agent's own, and so, under 2.0.1, does
-the stock vault's root: the agent's own tokens stand behind that loan. v1 loans take their backer from the
-repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to backing held now.
+id (registry transfers). The protocol's treasury (and treasury v5, once the snapshot names its root) and seat vaults
+(V3 and the growth seat vault V4, public ids in the snapshot) count from day one. A backer the record doesn't know
+counts as the agent's own, and so, under 2.0.1, does the stock vault's root: the agent's own tokens stand behind that
+loan. v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies
+to backing held now.
 
 **Rungs** (the record side of the trust ladder): 0 unproven · 1 started (one repayment backed by
 someone else) · 2 proven (3+, over 14+ days, none late) · 3 earned (proven, a record score of 300+ with income left
@@ -53,7 +54,17 @@ out, and 30+ days since the first backed loan) · 4 income-backed (earned, incom
 Income can add points, but it can't lift a thin record to "earned". Every threshold is in the weights file.
 
 Every result explains itself: the score, the rung, each component with its points and reason, penalties, and the
-raw details (USDG-days, loans, payers).
+raw details (USDG-days, loans, payers, and `incomeUsdg`: the x402 USDG of the payers that count, before caps and
+weights). `receiptsUsdg` and `receiptPayers` show everything the agent was paid by payers outside its cluster in the
+window, at face value, dust and new wallets included: a customer's payment is always shown, even when it doesn't count
+toward the score.
+
+Each result also has `next` (since 2026-10-16): the next rung and how far the agent is on each of its conditions,
+`{ rung, name, needs: [{ key, have, need, met }], blocked }`, from the same figures the rung is judged on:
+`backedRepaid` (repayments backed by someone else), `spanDays` (days from the first such repayment to the last) and
+`late` (need 0) for proven; `recordScore` (income left out) and `daysSinceFirst` for earned; `incomePoints` and
+`payers` for income-backed. `blocked` is `"late"` when a late repayment keeps proven closed for good. `next` is null at
+rung 4 and after a default. It changes nothing in the score or the rung.
 
 ## Clusters
 
@@ -172,6 +183,12 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **inputs, 2026-10-14** (all versions): treasury v5's root (`meta.treasuryV5AgentId`, where an agent moves for its
+  $25 raise) backs from day one, as the treasury does: a moved line's loans stay someone else's risk.
+- **inputs, 2026-10-04** (all versions): a loan repaid through AutoRepay (Autopay) is read from AutoRepay's own
+  `AutoRepaid` log, which names who paid: the agent's wallet, its owner, or both, each of which must be the agent's own
+  for the loan to count as repaid from income (`readRepayers` in `sdk/x402-income.mjs`, `repaidByOwn` in
+  `sdk/score-v2-inputs.mjs`). Without it the payer was AutoRepay itself, never the agent's own.
 - **inputs, 2026-10-02** (all versions): x402 payments settled through Permit2 count as income, read from the x402
   proxies' `Settled()`/`SettledWithPermit()` and the USDG transfer right before; until now only EIP-3009 payments
   were read. No published score changes: a full index read with it from pool v2's deploy block to block 78,018,367

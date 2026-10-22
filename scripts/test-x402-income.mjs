@@ -3,7 +3,7 @@
 //   node scripts/test-x402-income.mjs
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
+import { pairPayments, pairPermit2, scanPayments, scanTransfers, TOPICS, PERMIT2_PROXIES, getLogsAdaptive, DeadlineError, readAgentWallets, readRepayers, autoRepaidPayers, updateIncome, updateBackerTenure } from "../sdk/x402-income.mjs";
 import { scoreV2, DEFAULT_WEIGHTS as W } from "../sdk/score-v2.mjs";
 import { buildInputs, scoreAll } from "../sdk/score-v2-inputs.mjs";
 
@@ -12,6 +12,7 @@ let passed = 0;
 const check = async (name, fn) => { await fn(); passed++; console.log("  ok  ", name); };
 const pts = (r, k) => r.components.find((c) => c.key === k).points;
 const A = (n) => "0x" + n.toString(16).padStart(40, "0"); // a readable fake address
+const lc = (a) => String(a).toLowerCase();
 const topic = (a) => ethers.zeroPadValue(a, 32);
 const auth = (tx, index, payer, block = 100) => ({ transactionHash: tx, index, blockNumber: block, topics: [TOPICS.AUTH_USED, topic(payer), ethers.id("nonce" + tx + index)], data: "0x" });
 const xfer = (tx, index, from, to, amount, block = 100) => ({ transactionHash: tx, index, blockNumber: block, topics: [TOPICS.TRANSFER, topic(from), topic(to)], data: ethers.toBeHex(amount, 32) });
@@ -272,6 +273,21 @@ await check("audit F3: a v1 loan with the same id as a funded v2 loan gets no in
   assert.deepEqual(i.loans.map((l) => [l.incomeShare]), [[0], [1]]);
 });
 
+await check("Autopay: a loan repaid through AutoRepay from the agent's wallet, its owner, or both, keeps the income reward", () => {
+  const s = world(lender(), [backed(711, 50, 20, 10)]);
+  const toKey = clients(5, 20.2).map((p) => ({ ...p, payTo: WALLET })); // x402 income lands on the agent's declared key
+  const fromWallet = one(s, 1, { income: toKey, repayers: { 711: WALLET }, agentWallets: { 1: WALLET } });
+  const fromBoth = one(s, 1, { income: toKey, repayers: { 711: [WALLET, OWNER] }, agentWallets: { 1: WALLET } });
+  const fromOwner = one(s, 1, { income: toKey, repayers: { 711: OWNER }, agentWallets: { 1: WALLET } });
+  for (const r of [fromWallet, fromBoth, fromOwner]) assert.equal(r.detail.repaidFromIncome, 1);
+  // every address that paid must be the agent's own: a stranger beside the wallet, an empty list, or AutoRepay itself
+  // (a repayment the mapping could not resolve) fund nothing
+  const mixed = one(s, 1, { income: toKey, repayers: { 711: [WALLET, OTHER] }, agentWallets: { 1: WALLET } });
+  const empty = one(s, 1, { income: toKey, repayers: { 711: [] }, agentWallets: { 1: WALLET } });
+  const unmapped = one(s, 1, { income: toKey, repayers: { 711: A(0xa0) }, agentWallets: { 1: WALLET } });
+  for (const r of [mixed, empty, unmapped]) assert.equal(r.detail.repaidFromIncome, 0);
+});
+
 await check("income arriving outside the loan, from the agent's own side, or a loan repaid by someone else, funds nothing", () => {
   const s = world(lender(), [backed(701, 50, 20, 10)]);
   const before = one(s, 1, { income: [pay(CLIENT, OWNER, 60, 25)], repayers: { 701: OWNER } }); // paid before the loan
@@ -390,6 +406,44 @@ await check("index: a new payment wallet is backfilled on its own while the main
   assert.equal(r.complete, true);
 });
 
+await check("index: a backfill that runs out of time never holds back the netting cursor or the scores (live 2026-10-10: nine wallet backfills ate every run once a first payer appeared)", async () => {
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 50 }, { payer: P2, payTo: W2, amount: 2_000_000, block: 60 }], wallets: { 1: W1, 2: W2 } });
+  let r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
+  assert.deepEqual([r.complete, r.state.payers, r.state.transfersTo], [true, [P1.toLowerCase()], 100]);
+  // the next run: agent 2's wallet is new, so it is backfilled from the start; that read outlasts the run's time
+  const slow = { ...chain, async getLogs(f) { if (f.fromBlock === 10) await new Promise((res) => setTimeout(res, 300)); return chain.getLogs(f); } };
+  r = await updateIncome(slow, r.state, opts(snapOf([agent(1, W1), agent(2, W2)]), 120, { deadline: Date.now() + 150 }));
+  assert.equal(r.state.paymentsTo, 120, "the payment cursor moved on");
+  assert.equal(r.state.transfersTo, 120, "and so did the netting cursor, before the backfill took the time");
+  assert.equal(r.complete, true, "so the scores are published; the backfill resumes next run");
+  assert.ok(r.state.paymentBackfills.some((bf) => bf.wallets.includes(W2.toLowerCase()) && bf.next <= 100), "the backfill is still there, to resume");
+});
+
+await check("index: a payer a payment backfill finds is netted in the same run, before its income counts", async () => {
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 50 }, { payer: P2, payTo: W2, amount: 2_000_000, block: 60 }],
+    transfers: [{ from: W1, to: P2, amount: 500_000, block: 70 }], wallets: { 1: W1, 2: W2 } });
+  let r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
+  assert.deepEqual(r.state.payers, [P1.toLowerCase()]);
+  r = await updateIncome(chain, r.state, opts(snapOf([agent(1, W1), agent(2, W2)]), 120));
+  assert.deepEqual(r.state.payers, [P1, P2].map((x) => x.toLowerCase()).sort(), "P2, found by W2's backfill, is a payer now");
+  assert.deepEqual(r.state.transfers.map((x) => [x.from, x.to, x.amount]), [[W1.toLowerCase(), P2.toLowerCase(), "500000"]], "and what agent 1's wallet sent it is read");
+  assert.deepEqual(r.pending.payers, [], "read to the end: nothing waits");
+  assert.equal(r.complete, true);
+});
+
+await check("index: a payment a backfill finds puts its agent's repaid loan's repayer before the scores, as one the cursor finds does", async () => {
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 50 }, { payer: P2, payTo: W2, amount: 2_000_000, block: 60 }], wallets: { 1: W1, 2: W2 } });
+  const first = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
+  // agent 2 is new (its wallet W2 is backfilled) and repaid loan 7 while P2's payment (block 60) was in
+  const loan = { agentId: 2, era: "v2", id: 7, principal: 1, fee: 0, issuedAt: NOW - 1000 + 55, dueAt: NOW + DAY, closedAt: NOW - 1000 + 65, status: "repaid" };
+  const snap = snapOf([agent(1, W1), agent(2, W2)], [loan], [{ kind: "Repaid", era: "v2", loanId: 7, tx: "0xr7" }]);
+  const held = await updateIncome(chain, first.state, opts(snap, 120, { maxRepayerReads: 0 }));
+  assert.equal(held.complete, false, "its repayer not read yet: no scores from this run");
+  const read = await updateIncome(chain, first.state, opts(snap, 120));
+  assert.ok("7" in read.state.repayers, "read in the same run when there is time");
+  assert.equal(read.complete, true);
+});
+
 await check("index: a new index reads Permit2 payments from the start, through the same cursor as the signed ones", async () => {
   const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 40 }], permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
   const r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
@@ -503,6 +557,39 @@ await check("index: a Repaid log counts only from the pool itself", async () => 
   const got = await readRepayers(chain, A(0x99), [{ loanId: 7, tx: "0xgood" }]);
   const fake = await readRepayers(chain, A(0x99), [{ loanId: 7, tx: "0xbad" }]);
   assert.deepEqual([got[7], fake[7]], [W1.toLowerCase(), null]);
+});
+
+await check("index: a repayment AutoRepay made is read from its AutoRepaid log: the address or addresses that paid, only for the pinned AutoRepay", async () => {
+  const repaid = new ethers.Interface(["event Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, address payer)"]);
+  const auto = new ethers.Interface(["event AutoRepaid(uint256 indexed loanId, uint256 indexed agentId, address wallet, uint256 fromWallet, uint256 fromWalletSavings, address owner, uint256 fromOwner, uint256 fromOwnerSavings)"]);
+  assert.equal(auto.getEvent("AutoRepaid").topicHash, TOPICS.AUTOREPAID);
+  const POOL = A(0x99), AR = A(0xa0), FAKE = A(0xa1), OWN = A(0x0a);
+  const rep = (loanId) => ({ address: POOL, ...repaid.encodeEventLog("Repaid", [loanId, 1, 5, 0, AR]) });
+  const ar = (address, loanId, w, ow) => ({ address, ...auto.encodeEventLog("AutoRepaid", [loanId, 1, W1, w[0], w[1], OWN, ow[0], ow[1]]) });
+  const txs = {
+    "0xw": [ar(AR, 7, [5, 0], [0, 0]), rep(7)], // the wallet's USDG
+    "0xws": [ar(AR, 7, [0, 5], [0, 0]), rep(7)], // the wallet's savings
+    "0xboth": [ar(AR, 7, [2, 1], [1, 1]), rep(7)], // the wallet, then the owner
+    "0xo": [ar(AR, 7, [0, 0], [3, 2]), rep(7)], // the owner plan alone
+    "0xfake": [ar(FAKE, 7, [5, 0], [0, 0]), rep(7)], // an AutoRepaid log from another contract
+    "0xother": [ar(AR, 8, [5, 0], [0, 0]), rep(7)], // another loan's log
+  };
+  const chain = { async getTransactionReceipt(h) { return { logs: txs[h] }; } };
+  const got = {};
+  for (const h of Object.keys(txs)) got[h] = (await readRepayers(chain, POOL, [{ loanId: 7, tx: h }], Infinity, { autoRepay: AR }))[7];
+  assert.deepEqual(got, { "0xw": lc(W1), "0xws": lc(W1), "0xboth": [lc(W1), lc(OWN)], "0xo": lc(OWN), "0xfake": null, "0xother": null });
+  // without the pinned address (before it is deployed) the payer stays AutoRepay itself: never the agent's own
+  assert.equal((await readRepayers(chain, POOL, [{ loanId: 7, tx: "0xw" }]))[7], lc(AR));
+  assert.equal(autoRepaidPayers([ar(AR, 7, [0, 0], [0, 0])], AR, 7), null, "a log with nothing paid names no one");
+  // both pinned AutoRepays (v2's autoRepay and the retired v1's autoRepayV1): each repayment read
+  // from its own payer's log, never from the other's
+  const V1 = A(0xa2);
+  const rep1 = (loanId) => ({ address: POOL, ...repaid.encodeEventLog("Repaid", [loanId, 1, 5, 0, V1]) });
+  const both = { "0xv1": [ar(V1, 7, [5, 0], [0, 0]), rep1(7)], "0xv2": [ar(AR, 7, [0, 0], [5, 0]), rep(7)], "0xmix": [ar(AR, 7, [5, 0], [0, 0]), rep1(7)] };
+  const c2 = { async getTransactionReceipt(h) { return { logs: both[h] }; } };
+  const two = {};
+  for (const h of Object.keys(both)) two[h] = (await readRepayers(c2, POOL, [{ loanId: 7, tx: h }], Infinity, { autoRepay: [AR, V1] }))[7];
+  assert.deepEqual(two, { "0xv1": lc(W1), "0xv2": lc(OWN), "0xmix": null });
 });
 
 await check("index: complete waits for the netting scan and the repayers", async () => {
