@@ -71,7 +71,7 @@ npx priors-v2 join --invite <code>       # redeems a treasury v4 invite: first l
 npx priors-v2 join --seat <staker>       # or accepts that staker's seat offer instead (on the growth seat vault V4, else V3)
 npx priors-v2 borrow 5 --days 7
 npx priors-v2 repay --all
-npx priors-v2 status
+npx priors-v2 status                     # identity, line, loans, USDG, and whether the key is the agent's declared wallet
 npx priors-v2 move                       # treasury v4's line to treasury v5's, then the raise to $25
 npx priors-v2 raise                      # raises the treasury line to $25: treasury v5's (v4 raises nothing)
 npx priors-v2 tx                         # whether each recorded transaction is final, and whether it ran
@@ -102,6 +102,14 @@ else.
   `InviteBondV2` bond, the consent and `move`, the raise (left to the keeper if v5's raise budget for the epoch is
   used up). Run it again after a failure: it goes on from the step that failed. `raise` raises a v5 line, and refuses
   a v4 line while v4's rules hold raises, pointing at `move`.
+- **The wallet line**: `status` (and the status printed after `join` and every other write) ends with the key's USDG
+  and whether the key is the agent's declared payment wallet, read from the ERC-8004 registry (`getAgentWallet` on the
+  record's `registry`, a read only). Score v2 counts x402 income paid to the declared wallet only
+  ([SCORE-v2.md](SCORE-v2.md)). The registry's `register()` declares its caller, so `join` declares the key, and a
+  transfer of the agent clears it. With none declared, a second line gives the fix: `npx -y @priors/mcp@0.9.3
+  link-wallet --agent <id>` signs the registry's `AgentWalletSet` with `PRIORS_KEY`, and the key, the owner, sends the
+  `setAgentWallet` call it prints within 4 minutes. If the registry cannot be read, the line is the key's USDG alone,
+  and the exit code does not change.
 - **Exit codes**: 0 done (also when only the status shown after a write that went through could not be read; for `tx`:
   every recorded transaction final, or forgotten), 1 failed: the step that failed did nothing (refused before sending,
   reverted, or cancelled; a revert or cancel that mined stays recorded until `tx` shows it final; a node's refusal,

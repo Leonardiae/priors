@@ -7,13 +7,21 @@
 //   priors-v2 join --seat <staker>        ... then accept that staker's seat offer on the agent
 //   priors-v2 borrow <amount> [--days N]  borrow USDG (default 7 days) to the key's address
 //   priors-v2 repay [--all]               repay the oldest open loan, or every open loan
-//   priors-v2 status                      identity, sponsor, line, loans, balances
+//   priors-v2 status                      identity, sponsor, line, loans, balances, the agent's declared wallet
 //   priors-v2 raise                       raise the agent's treasury line to its second line (25 USDG): treasury v5's;
 //                                         treasury v4's only while its rules do not hold raises (they hold them today)
 //   priors-v2 move                        move the agent from treasury v4's line to treasury v5's, then raise it there
 //                                         (treasuryV5 in the v2 addresses): each step it has not done yet (leave,
 //                                         InviteBond v1 back, InviteBondV2 bond, move, raise)
 //   priors-v2 tx [--resend | --forget]    whether each recorded transaction is final, and whether it ran
+//
+// The status (`status`, and the one printed after each write) reads the agent's declared payment wallet from the
+// ERC-8004 registry (getAgentWallet on the addresses file's registry, a read only): x402 income counts toward Score v2
+// only when paid to it (docs/SCORE-v2.md). The live registry declares register()'s caller, so `join` declares this
+// key, and a transfer clears it. Its wallet line says whether it is this key, another address, or none; with none, it
+// names the fix: `priors-mcp link-wallet --agent <id>` (@priors/mcp 0.9.3) signs the registry's AgentWalletSet with this
+// key, and this key, the owner, sends the setAgentWallet call it prints. A read that fails adds nothing: the wallet line
+// is then as before, and the exit code is unchanged.
 //
 // Environment (the key is never read from argv and never printed; .env is loaded like the v1 tools):
 //   PRIORS_KEY        the agent owner's private key (PRIVATE_KEY is accepted too)
@@ -202,8 +210,39 @@ async function needAgent(sdk, me, addresses) {
   return id;
 }
 
+/**
+ * The payment wallet agent `id` declared in the ERC-8004 registry (getAgentWallet, a read on the registry the addresses
+ * file names, the one ownerOf is read on): its address, ZeroAddress when none is declared, or null when it could not be
+ * read (a registry without it, or a failed request).
+ */
+async function declaredWallet(sdk, id) {
+  try {
+    const reg = new ethers.Contract(await (await sdk._registry()).getAddress(), ["function getAgentWallet(uint256 agentId) view returns (address)"], sdk.provider);
+    return ethers.getAddress(await reg.getAgentWallet(id));
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * The status's wallet line: this key's USDG (the CLI acts only for an agent this key owns, so the owner's USDG is this
+ * key's) and, once the registry answered, whether this key is the agent's declared wallet. Not read: as before.
+ */
+function walletLines(s, declared) {
+  const bal = usd(s.ownerUsdg);
+  if (declared == null) return [`  wallet    ${bal}`];
+  const at = `${bal} at ${keyAddress}`;
+  if (declared === keyAddress) return [`  wallet    ${at} (declared: x402 income paid to it counts toward Score v2)`];
+  if (declared !== ethers.ZeroAddress) return [`  wallet    ${at} (not the declared wallet, which is ${declared}: x402 income counts toward Score v2 only when paid to that address)`];
+  return [
+    `  wallet    ${at} (no wallet declared, a transfer clears it: x402 income does not count toward Score v2 until one is)`,
+    `            to declare this key: \`npx -y @priors/mcp@0.9.3 link-wallet --agent ${s.agentId}\` (priors-mcp link-wallet) signs with PRIORS_KEY; send the setAgentWallet call it prints from this key, the owner, within 4 minutes`,
+  ];
+}
+
 async function printStatus(sdk, addresses, id) {
   const s = await sdk.status(id);
+  const declared = await declaredWallet(sdk, id); // asked only once the status itself was read
   const kind = s.sponsorKind === "seat vault" ? vaultKind(addresses, s.seatVault) : s.sponsorKind;
   const lines = [
     `agent #${s.agentId}  owner ${s.owner}`,
@@ -214,7 +253,7 @@ async function printStatus(sdk, addresses, id) {
   if (s.seat) lines.push(`  seat      ${s.seat.status}${s.seat.closing ? " (closing)" : ""}, staker ${s.seat.staker}`);
   if (s.openLoans.length === 0) lines.push("  loans     none open");
   for (const l of s.openLoans) lines.push(`  loan #${l.loanId}  ${usd(l.principal)} + fee ${usd(l.fee)} = ${usd(l.due)} due ${when(l.dueAt)}`);
-  lines.push(`  wallet    ${usd(s.ownerUsdg)}`);
+  lines.push(...walletLines(s, declared));
   console.log(lines.join("\n"));
   return s;
 }
