@@ -218,8 +218,11 @@ on priors.trade, with the wallet that owns the agent. To pay x402 URLs, borrow a
 `io.github.priors-agents/priors`, and the hosted one as `io.github.priors-agents/priors-read`. Since 0.5.0 the wallet
 can also keep idle USDG in savings (a USDG vault on Morpho: the agent's own money, with the vault's risks; see
 [`packages/x402`](packages/x402)), and a borrow on a SeatVaultV5 line refreshes it first. Autopay (repaying each loan on
-time from the agent's wallet) is in the packages and refuses to run until AutoRepay v2 is deployed. 0.2.11 carries
-0.5.0's security fixes for those staying on the 0.2 line.
+time from the agent's wallet) is in the packages, through AutoRepay v2, deployed on 2026-10-20 at
+`0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0` (`autoRepay` in `deployments/4663.v2.json`). `@priors/x402/autopay`
+takes that address from its caller; `@priors/mcp`'s `autopay_on` reads it from `PRIORS_AUTOREPAY`, else from its
+bundled deployments file, which carries it only in versions published after that date (0.9.3 and earlier bundle none:
+set `PRIORS_AUTOREPAY` there). 0.2.11 carries 0.5.0's security fixes for those staying on the 0.2 line.
 
 ### Or pay per call
 

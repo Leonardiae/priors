@@ -39,8 +39,10 @@ SeatVaultV3. The six protocol contracts live since 2026-10-04 (sources in `src/`
 19:49 UTC), `revenueRouter` (RevenueRouter, the fee
 sinks' and the steward's sweep destination), `buyAndBack` (BuyAndBack), `priorsLiquidity` (PriorsLiquidity),
 `swapLimiter` (SwapLimiter, the depth guard the engines read) and `keeperHelper` (KeeperHelper, SeatSizerV4's keeper
-since 2026-10-06). `seatVaultV5` (root `seatVaultV5AgentId` 8641, `seatVaultV5Block` 84,306,464) is SeatVaultV5, live
-since 2026-10-09 with owner-only backing. `npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
+since 2026-10-06). `seatVaultV5` (root `seatVaultV5AgentId` 8762, `seatVaultV5Block` 85,924,243) is SeatVaultV5, live
+since 2026-10-11 with owner-only backing; it replaced the deployment of 2026-10-09
+(`0xdE29D3A627d77CFA13c5331C1B7B181a4C5B752E`, root 8641, block 84,306,464), which is retired and not in the record.
+`npx priors-v2` and `resolveV2()` in `sdk/env.mjs` read it (the SDK's stock-line calls use `stockVault`
 from it; `priors-v2 join --seat` takes a staker's offer on `seatVaultV4` first, else on `seatVault`; `borrow` and `pay`
 on a line V5 sponsors take V5's step before the borrow, from `seatVaultV5` and `seatVaultV5AgentId`);
 `PRIORS_ADDRESSES` points them at another file; on a real chain a file whose addresses differ from the published record
