@@ -389,6 +389,16 @@ await check("move refused, nothing sent: a recorded inviteBondV2 that is not tre
   await refused(sdk.moveToTreasuryV5(AGENT), /the addresses file's inviteBondV2 \(0x0+bad\) is not treasury v5's bond/);
   nothingSent(c);
 }, { addresses: { ...WITH_V5, inviteBondV2: "0x0000000000000000000000000000000000000bad" } });
+// the consent is signed before the first write: a signer that refuses it leaves the agent on its v4 line, its v1 bond
+// in place and no V2 bond posted (review 2026-10-15: signed last, a refusal came after the line was left)
+class RefusesToSign extends ethers.Wallet {
+  connect(p) { return new RefusesToSign(this.privateKey, p); }
+  async signTypedData() { throw new Error("user rejected the signature"); }
+}
+await check("move refused, nothing sent: a signer that refuses the consent", {}, async (c, sdk) => {
+  await refused(sdk.moveToTreasuryV5(AGENT), /user rejected the signature/);
+  nothingSent(c);
+}, { key: new RefusesToSign(owner.privateKey) });
 await check("a stale V2 bond (posted by the agent's previous owner) is replaced by the owner's own: leave, approve and deposit, then move", { v1: { depositor: ZERO }, v2: { depositor: oldOwner } }, async (c, sdk) => {
   await sdk.moveToTreasuryV5(AGENT);
   assert.deepEqual(c.sent, ["pool.leave", "usdg.approve", "v2.deposit", "v5.move", "v5.raise"]);

@@ -23,7 +23,7 @@
 //            await p.addCollateral(agentId, "0.01"); await p.closeStockLine(agentId)
 //   PT-USDG  await p.ptQuote({ side: "buy", amount: 100 }); await p.ptPosition(addr)   (sdk/pt-usdg.mjs)
 //            await p.ptBuy(100); await p.ptSell("all"); await p.ptRedeem("all")       // { send: false } returns the calls
-//            await p.openPtLine(agentId, 50)                                      // once the stock vault lists PT-USDG
+//            await p.openPtLine(agentId, 50)                                      // while the stock vault takes PT-USDG lines
 //
 // Amounts: a number or a decimal string is whole USDG ("5", 5.5); a bigint is raw 6-decimal units. Every write
 // simulates first (a revert is explained with the contracts' own custom errors, before any gas is spent) and
@@ -1117,6 +1117,9 @@ export class PriorsV2 {
       const bondAmount = sameAddr(v2, me) ? 0n : await t.bondV2.amount();
       const usdg = await this._usdg();
       if (bondAmount > 0n && (await usdg.balanceOf(me)) < bondAmount) throw no(`the InviteBondV2 bond takes ${fmtUsdg(bondAmount)} USDG from ${me}, which holds ${fmtUsdg(await usdg.balanceOf(me))}`);
+      // the consent first: a signer that refuses it (or cannot sign) stops the move before the v4 line is left (review
+      // 2026-10-15). Leaving, the v1 release and the deposit do not touch the pool's consent nonce, so it still holds.
+      const { consent, sig } = await this.signConsent({ agentId: id, sponsorId: t.root, maxPremiumBps: 0, deadline });
 
       // ---- the steps ----
       const step = async (name, fn) => {
@@ -1139,10 +1142,7 @@ export class PriorsV2 {
           return sendChecked(t.bondV2, "deposit", [id], this._ifaces);
         });
       } else steps.push({ step: "bond on InviteBondV2", skipped: "the owner's InviteBondV2 bond is posted" });
-      await step("move", async () => {
-        const { consent, sig } = await this.signConsent({ agentId: id, sponsorId: t.root, maxPremiumBps: 0, deadline });
-        return sendChecked(t.t5, "move", [id, consentTuple(consent), sig], this._ifaces);
-      });
+      await step("move", () => sendChecked(t.t5, "move", [id, consentTuple(consent), sig], this._ifaces));
     }
     // ---- 5. the raise: not fatal (the keeper raises eligible v5 lines every 30 minutes), unless its answer was lost ----
     try {
@@ -1442,7 +1442,7 @@ extendPriorsV2({
 });
 
 /* PT-USDG (sdk/pt-usdg.mjs): Pendle's principal token for USDG, bought, sold and redeemed through Pendle's router with
-   this instance's provider and signer, and posted behind an agent's line through the stock vault once it lists it. A
+   this instance's provider and signer, and posted behind an agent's line through the stock vault while it takes one. A
    trade with a signer is sent unless `send: false`; without one (or with `send: false`) it returns the calls, for
    `account` (default: the signer's address). A step whose outcome is not known throws TX_UNCONFIRMED (sdk/pt-usdg.mjs):
    check ptPosition before trading again. Its wait is bounded by this instance's waitTimeoutMs. */
@@ -1464,11 +1464,17 @@ extendPriorsV2({
   ptRedeem: ptTrade(ptRedeem),
   /** `addr`'s PT-USDG (default: the signer's): balance, value now, days to maturity, implied fixed APY, the vault's listing. */
   async ptPosition(addr) { return ptPosition(this.provider, addr || (await this.me())); },
-  /** Deposit `amount` PT-USDG behind agent `agentId` and open its line (openStockLine with the PT token), once the
-   *  stock vault lists it enabled (ptListing's `backsLines`); refused before that, with nothing sent. */
+  /** Deposit `amount` PT-USDG behind agent `agentId` and open its line (openStockLine with the PT token), while the
+   *  stock vault takes a new PT-USDG line (ptListing's `backsLines`: listed, enabled, room under its cap, and its
+   *  lendStatus 0, read live); refused otherwise, with nothing sent. */
   async openPtLine(agentId, amount, opts = {}) {
     const l = await ptListing(this.provider);
-    if (!l || !l.backsLines) throw new Error(l && l.listed ? "the stock vault takes no new PT-USDG line now (disabled, or its shared cap is used up)" : "the stock vault does not list PT-USDG yet");
+    if (!l || !l.backsLines) {
+      throw new Error(!l || !l.listed ? "the stock vault does not list PT-USDG yet"
+        : l.enabled && l.hold === null ? "the stock vault's hold on PT-USDG could not be read just now: try again"
+        : l.enabled && l.hold !== 0 ? "the stock vault lists PT-USDG, but takes no new line on it right now (a lending hold): try again later"
+        : "the stock vault takes no new PT-USDG line now (disabled, or its shared cap is used up)");
+    }
     return this.openStockLine(agentId, PT_USDG.token, amount, opts);
   },
 });

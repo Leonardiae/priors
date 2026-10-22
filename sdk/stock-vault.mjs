@@ -55,6 +55,10 @@ export const STOCK_ASSETS = Object.freeze(STOCKS.assets.map((a) => Object.freeze
 
 const lc = (a) => String(a || "").toLowerCase();
 const vaultIface = new ethers.Interface(STOCK_VAULT_ABI);
+// the Asset struct whole (lineCap, the token's cap on open lines), and the fair default's buffer: an implementation from
+// before the fair default has no seizeBufferOf, so that read fails and the default keeps the whole deposit (null)
+const assetIface = new ethers.Interface(["function assets(address token) view returns (address feed, uint64 maxAge, uint8 tokenDecimals, uint8 feedDecimals, bool enabled, uint16 ltvBps, uint128 lineCap)"]);
+const bufferIface = new ethers.Interface(["function seizeBufferOf(address token) view returns (uint256)"]);
 const feedIface = new ethers.Interface(FEED_ABI);
 const BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
 const balanceIface = new ethers.Interface(BALANCE_ABI);
@@ -115,6 +119,12 @@ export async function ltvOf(vault, token, agentId = 0n) {
   try { return BigInt(await vault.ltvOf(BigInt(agentId), token)); } catch (_) { return BigInt((await vault.params()).ltvBps); }
 }
 
+/** The eth_call of the vault's ltvOf(agentId, token), for a reader that speaks JSON-RPC itself (the hosted MCP server,
+ *  through sdk/pt-usdg.mjs rpc): { to, data }; ltvOfResult decodes its answer (bps, a bigint). No fallback here: a
+ *  failed read is the caller's to handle, never the vault-wide default. */
+export const ltvOfCall = (vault, agentId, token) => ({ to: vault, data: vaultIface.encodeFunctionData("ltvOf", [BigInt(agentId), token]) });
+export const ltvOfResult = (data) => BigInt(vaultIface.decodeFunctionResult("ltvOf", data)[0]);
+
 /**
  * Agent `agentId`'s stock position, or null when it has none. Amounts are bigints: `amount` in the token's own units,
  * `value`, `line` and `borrowRoom` in USDG base units (6 decimals). `value` is null while the vault will not price the
@@ -170,10 +180,12 @@ export async function stockAssets(provider, vaultAddress, { assets = STOCK_ASSET
     calls.push({ target: v, iface: vaultIface, fn: "lendStatus", args: [a.token] });
     calls.push({ target: v, iface: vaultIface, fn: "ltvOf", args: [0n, a.token] }); // the stock's own
     calls.push({ target: v, iface: vaultIface, fn: "openLinesOf", args: [a.token] });
+    calls.push({ target: v, iface: assetIface, fn: "assets", args: [a.token] });
+    calls.push({ target: v, iface: bufferIface, fn: "seizeBufferOf", args: [a.token] });
   }
   const r = await readMany(provider, calls, { multicall, blockTag });
   return assets.map((a, i) => {
-    const [feed, val, hold, ltv, lines] = r.slice(i * 5, i * 5 + 5);
+    const [feed, val, hold, ltv, lines, asset, buffer] = r.slice(i * 7, i * 7 + 7);
     const answer = feed.ok ? BigInt(feed.value.answer) : null;
     const h = hold.ok ? Number(hold.value) : null;
     return {
@@ -181,6 +193,7 @@ export async function stockAssets(provider, vaultAddress, { assets = STOCK_ASSET
       answer, price: answer === null ? null : Number(answer) / 10 ** a.feedDecimals, updatedAt: feed.ok ? Number(feed.value.updatedAt) : null,
       usable: !!(val.ok && val.value[0]), hold: h, holdReason: h ? HOLD_REASONS[h] || `hold ${h}` : "",
       ltvBps: ltv.ok ? BigInt(ltv.value) : defaultLtv, openLines: lines.ok ? BigInt(lines.value) : null,
+      lineCap: asset.ok ? BigInt(asset.value.lineCap) : null, seizeBufferBps: buffer.ok ? BigInt(buffer.value) : null,
     };
   });
 }
