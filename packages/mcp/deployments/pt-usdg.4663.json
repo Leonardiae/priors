@@ -16,9 +16,9 @@
   "setAsset": {
     "maxAge": 93600,
     "enabled": true,
-    "ltvBps": 5000,
-    "lineCap": "250000000",
-    "_why": "The owner's launch settings (2026-10-02): 26 h, 50%, $250 of open PT lines in all."
+    "ltvBps": 6000,
+    "lineCap": "1000000000",
+    "_why": "As the vault holds them (read back on chain; the Safe's AssetSet of 2026-10-12, tx 0x614aac68348d50da5e8f5dea2e489879f982be3c0bfcb01ebe172e7ec23ee545): 26 h, enabled, 60% since 2026-10-12, one $1,000 cap for all PT-USDG lines since 2026-10-10. Listed since 2026-10-05: there is nothing to sign with these. Launch settings of 2026-10-02 were 50% and $250."
   },
   "feed": "0x0000000000000000000000000000000000000000",
   "feedBlock": 0

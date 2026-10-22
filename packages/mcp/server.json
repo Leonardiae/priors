@@ -9,12 +9,12 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.9.3",
+  "version": "0.10.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@priors/mcp",
-      "version": "0.9.3",
+      "version": "0.10.0",
       "transport": {
         "type": "stdio"
       },

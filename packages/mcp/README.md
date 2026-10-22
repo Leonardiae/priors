@@ -49,6 +49,7 @@ repaying.
 | `pt_redeem(amount_pt \| "all", slippage_bps?, dry_run?)` | redeem the wallet's PT-USDG for USDG 1:1, from maturity (2027-03-25) on; needs ETH for gas | yes |
 | `fund_base(amount_usd, max_borrow_usd?)` | only with Base on (below): move USDG to USDC in the same address on Base through Across, keeping back what Autopay and signed payments need, borrowing the gap only with `max_borrow_usd`; needs ETH for gas | yes |
 | `return_to_robinhood(amount_usd \| "all")` | only with Base on: move USDC from the Base float back to USDG on Robinhood Chain through Relay, one signature and no gas on Base; keeps back what signed Base payments need | yes |
+| `pay_gateway(service_id, input?, seller_url?, max_price_usd?, max_borrow_usd?, use_savings?)` | (since 0.10.0) only with `PRIORS_GATEWAY=on` (below): buy one call from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain through Keyring's gateway, which pays the seller and relays its answer; `pay_url`'s limits and its one payment per purchase apply | yes |
 
 Tools that move money state the amounts in their answer, are marked destructive for MCP clients, and their
 descriptions tell the assistant to confirm with you first. They run one at a time and each answers within 45 s, under an
@@ -97,8 +98,9 @@ less `slippage_bps`, 1% by default): the router reverts rather than fill worse. 
 sent and its receipt checked. The quote is the oracle's spot rate, before the trade's own price impact, so a large
 trade may need a wider margin.
 
-Once the Priors stock vault lists PT-USDG, an agent's owner can post it behind a line (`pt_position` says when);
-until then it is a token the wallet holds. `PRIORS_PT=off` removes the five tools.
+The Priors stock vault lists PT-USDG: an agent's owner can post it behind a line in Go mode
+(https://go.priors.trade/account#ac-pt) while the vault takes new PT-USDG lines, and `pt_position` says whether it does
+right now (it reads the vault's hold live). `PRIORS_PT=off` removes the five tools.
 
 ## Paying USDC sellers on Base (off by default)
 
@@ -121,6 +123,32 @@ pays those sellers from it. Without both settings nothing changes.
   `wallet_balance` and `credit_status` show the float and any transfer in flight, and `credit_status` warns when a
   loan is due within 24 hours while money sits on Base.
 
+## Sellers in Vantis' Keyring catalog (off by default, since 0.10.0; not working with Keyring yet)
+
+Vantis' Keyring (https://keyring.vantis.sh) lists x402 sellers (LLM inference, search, data), most of them paid in USDC
+on Base, and runs a gateway that takes one USDG payment on Robinhood Chain, pays the seller itself and relays its
+answer. With `PRIORS_GATEWAY=on`, `pay_gateway` buys through it with `@priors/x402`'s `payViaGateway`, so the agent's
+line covers such a seller with no Base float. Without that setting nothing changes and the tool is not listed.
+
+- The seller is named by its Keyring `service_id`; `seller_url`, when given, must be the URL Keyring's record lists.
+  A record Keyring marks suspicious or testnet, or one with no price, is refused.
+- Keyring's quote is read first: it must be in USDG on Robinhood Chain, at most `max_price_usd` (default $0.10, within
+  `PRIORS_MAX_PRICE_USD`) and at most `PRIORS_GATEWAY_MAX_FEE_BPS` over the seller's own listed price. Keyring's 402
+  may ask no more than the quote, on Robinhood Chain only, and (with `PRIORS_GATEWAY_PAYTO`) must pay Keyring's own
+  address. Each refusal comes before anything is signed or borrowed.
+- It is paid as `pay_url` pays: from the wallet, then savings, then a loan of only the shortfall (raised to the pool's
+  minimum loan) when `max_borrow_usd` covers it; one money call at a time; the same session and daily caps
+  (`pay_url` and `pay_gateway` count together); `PRIORS_PAY_HOSTS`, which must then list `keyring.vantis.sh`; and one
+  payment per purchase (the same `service_id` and `input`), kept in `PRIORS_STATE_DIR` and sent again, never signed
+  twice.
+- **It does not complete a purchase today: leave it off.** Live tries on 2026-10-21 read Keyring's 402 (x402 v2,
+  `exact` USDG on Robinhood Chain, paid to `0xa68a4ee3fe22340dde776601a5f67cdcf996f9e9`), but Keyring answered every
+  signed payment with another 402 or a 502: it reads the payment from `X-PAYMENT`, not the `PAYMENT-SIGNATURE` header
+  this version sends, and its facilitator then verified none (`valid_verifications` 0). Nothing was settled or lost:
+  a signed payment Keyring does not settle moves no money. `input` is `{"body": {...}}` for a seller that takes a POST.
+  A later version sends what Keyring reads once a live purchase completes. `PRIORS_GATEWAY_PAYTO` pins the address
+  (`docs/X402-ROUTES.md` in the repository).
+
 ## Configure
 
 The only secret is the wallet key, and it is read from a file only you can read (`PRIORS_KEY_FILE`, from 0.8.0) or
@@ -135,13 +163,13 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_AGENT_ID` | looked up from the identity registry | the Priors agent id the wallet acts for (the lookup finds only identities minted to the wallet since the v2 deploy that never left it, never one transferred to it, nor (0.8.1) one that left and came back; set it for an older, a bought or a returned one, or when the wallet holds several; (0.8.0) required with a daily limit) |
 | `PRIORS_RPC` | `https://rpc.mainnet.chain.robinhood.com` | JSON-RPC endpoint (a private URL is redacted from every answer) |
 | `PRIORS_FACILITATOR` | `https://facilitator.priors.trade` | where `find_services` lists merchants |
-| `PRIORS_MAX_PRICE_USD` | `1.00` | ceiling on what `pay_url` may be told to pay per call |
-| `PRIORS_MAX_BORROW_USD` | `25` | ceiling on `borrow` and on `pay_url`'s `max_borrow_usd` |
-| `PRIORS_MAX_SPEND_USD` | `5` | most `pay_url` may sign in total while the server runs (counted when signed) |
-| `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow` and `pay_url` may borrow in total while the server runs (a borrow sent whose answer was lost counts: it may have opened a loan) |
-| `PRIORS_MAX_SPEND_DAY_USD` | none | (0.8.0) most `pay_url` may sign per UTC day for the agent and for its wallet, across restarts and every process sharing `PRIORS_STATE_DIR`; needs `PRIORS_AGENT_ID` and a state directory, or the server does not start |
-| `PRIORS_MAX_BORROW_DAY_USD` | none | (0.8.0) most `borrow`, `pay_url` and `fund_base` may borrow per UTC day for the agent and for its wallet, the same way; `0` turns borrowing off |
-| `PRIORS_PAY_HOSTS` | any public https host | (0.8.0) the only hosts `pay_url` pays, comma-separated, matched exactly (no wildcard; a port only when named) |
+| `PRIORS_MAX_PRICE_USD` | `1.00` | ceiling on what `pay_url` (and `pay_gateway`) may be told to pay per call |
+| `PRIORS_MAX_BORROW_USD` | `25` | ceiling on `borrow` and on `pay_url`'s (and `pay_gateway`'s) `max_borrow_usd` |
+| `PRIORS_MAX_SPEND_USD` | `5` | most `pay_url` (with `pay_gateway`) may sign in total while the server runs (counted when signed) |
+| `PRIORS_MAX_BORROW_TOTAL_USD` | `25` | most `borrow` and `pay_url` (and `pay_gateway`) may borrow in total while the server runs (a borrow sent whose answer was lost counts: it may have opened a loan) |
+| `PRIORS_MAX_SPEND_DAY_USD` | none | (0.8.0) most `pay_url` (with `pay_gateway`) may sign per UTC day for the agent and for its wallet, across restarts and every process sharing `PRIORS_STATE_DIR`; needs `PRIORS_AGENT_ID` and a state directory, or the server does not start |
+| `PRIORS_MAX_BORROW_DAY_USD` | none | (0.8.0) most `borrow`, `pay_url`, `pay_gateway` and `fund_base` may borrow per UTC day for the agent and for its wallet, the same way; `0` turns borrowing off |
+| `PRIORS_PAY_HOSTS` | any public https host | (0.8.0) the only hosts `pay_url` (and `pay_gateway`, at `keyring.vantis.sh`) pays, comma-separated, matched exactly (no wildcard; a port only when named) |
 | `PRIORS_ALLOW_LOCAL` | off | `1` lets `pay_url` reach `http://localhost` and private addresses (local testing only) |
 | `PRIORS_SCORE_V2` | `https://priors.trade/api/score-v2` | where `score_of` reads Priors Score v2; `off` shows the on-chain score only |
 | `PRIORS_STOCK_VAULT` | the bundled deployments file's `stockVault` | the stock vault the stock tools and `credit_status` read |
@@ -163,6 +191,9 @@ may spend. Rows marked (0.8.0) take effect from that version; 0.7.x ignores them
 | `PRIORS_MAX_BRIDGE_TOTAL_USD` | `25` | most both may move in total while the server runs, either way (a transfer that may be out counts, and one in flight when the server starts counts too) |
 | `PRIORS_MAX_BRIDGE_FEE_BPS` | `100` | a bridge fee above this, in basis points of the amount, is refused |
 | `PRIORS_MAX_BASE_FLOAT_USD` | `10` | `fund_base` never brings the Base float above this |
+| `PRIORS_GATEWAY` | `off` | (since 0.10.0) `on` offers `pay_gateway` (Vantis' Keyring gateway, above); any value other than on or off stops the start |
+| `PRIORS_GATEWAY_PAYTO` | not pinned | (since 0.10.0) the only address Keyring's 402 may ask to be paid: Keyring's own, as a first live call reads it |
+| `PRIORS_GATEWAY_MAX_FEE_BPS` | `1000` | (since 0.10.0) most Keyring's quote may be over the seller's own listed price, in basis points (10%) |
 | `PRIORS_STATE_DIR` | `~/.local/state/priors-mcp` | where the payments signed and not yet settled are kept (one owner-only file per wallet, never the key, with a short-lived `.lock` beside it while it is written), so a restart, a new session or another session of the same wallet resends them instead of signing again. An absolute path, or one starting with `~/` (a relative one is refused at start). A payment that cannot be written there is not sent. `off` keeps them in memory only (0.8.3) On Linux and macOS it must be yours alone: owned by your user with no group or other write bit, and no directory above it that other users can write to unless it is sticky like `/tmp`; otherwise the money tools refuse (another local user could move the records aside), and the read-only tools still answer. |
 
 Contract addresses (pool, lens, registry, USDG) come from `deployments/4663.v2.json`, bundled in the package, and the
@@ -178,7 +209,7 @@ Settings → Developer → Edit Config (`claude_desktop_config.json`), then rest
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.9.3"],
+      "args": ["-y", "@priors/mcp@0.10.0"],
       "env": {
         "PRIORS_KEY": "0xYOUR_AGENT_WALLET_KEY",
         "PRIORS_AGENT_ID": "1234"
@@ -200,7 +231,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
   "mcpServers": {
     "priors": {
       "command": "npx",
-      "args": ["-y", "@priors/mcp@0.9.3"],
+      "args": ["-y", "@priors/mcp@0.10.0"],
       "env": {
         "PRIORS_KEY": "${PRIORS_KEY}",
         "PRIORS_AGENT_ID": "${PRIORS_AGENT_ID:-}"
@@ -213,7 +244,7 @@ A project `.mcp.json` that reads the key from your shell's environment, so the f
 or, for your user only, from a macOS or Linux terminal:
 
 ```sh
- (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.9.3' priors-mcp ~/.config/priors/agent.key
+ (read -rs PRIORS_KEY && umask 077 && mkdir -p ~/.config/priors && rm -f ~/.config/priors/agent.key && printf '%s\n' "$PRIORS_KEY" > ~/.config/priors/agent.key) && claude mcp add priors --scope user -- sh -c 'read -r PRIORS_KEY < "$1" && export PRIORS_KEY && exec npx -y @priors/mcp@0.10.0' priors-mcp ~/.config/priors/agent.key
 ```
 
 It waits for the key without showing it (paste it, then Enter), saves it in a file only you can read, and gives Claude
@@ -269,7 +300,7 @@ to approve a borrow; this package, with the key, pays for APIs. With borrowing o
 approves each loan in Priors' Go mode. ElizaOS (`@elizaos/plugin-mcp`):
 
 ```ts
-"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.9.3"],
+"priors-wallet": { type: "stdio", command: "npx", args: ["-y", "@priors/mcp@0.10.0"],
   env: { PRIORS_KEY_FILE: "/home/agent/.config/priors/agent-7311.key", PRIORS_AGENT_ID: "7311",
     PRIORS_MAX_BORROW_USD: "0", PRIORS_MAX_BORROW_DAY_USD: "0", PRIORS_MAX_SPEND_DAY_USD: "1", PRIORS_MAX_PRICE_USD: "0.10",
     PRIORS_PAY_HOSTS: "api.example.com" } }
@@ -281,7 +312,7 @@ OpenClaw (`mcp.servers`, JSON5) takes the same `command`, `args` and `env`; Herm
 mcp_servers:
   priors-wallet:
     command: npx
-    args: ["-y", "@priors/mcp@0.9.3"]
+    args: ["-y", "@priors/mcp@0.10.0"]
     env:
       PRIORS_KEY_FILE: /home/agent/.config/priors/agent-7311.key
       PRIORS_AGENT_ID: "7311"
@@ -308,7 +339,7 @@ key proves it is there: it signs the ERC-8004 identity registry's `AgentWalletSe
 agent's).
 
 ```sh
-PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.9.3 link-wallet --agent 7311
+PRIORS_KEY_FILE=~/.config/priors/agent-7311.key npx -y @priors/mcp@0.10.0 link-wallet --agent 7311
 ```
 
 It reads the registry's EIP-712 domain and refuses to sign for any other, takes the owner from the chain (`--owner`

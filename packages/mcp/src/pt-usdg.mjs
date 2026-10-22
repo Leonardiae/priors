@@ -17,7 +17,7 @@
 // account's PT of every listed market (`markets`), so PT of a matured, redeem-only market shows with its Redeem.
 //
 // PriorsV2 (sdk/priors-v2.mjs) carries the same as methods: p.ptQuote, p.ptBuy, p.ptSell, p.ptRedeem, p.ptPosition, and
-// p.openPtLine(agentId, amount) to post PT-USDG behind an agent's line once the stock vault lists it.
+// p.openPtLine(agentId, amount) to post PT-USDG behind an agent's line while the stock vault takes new PT-USDG lines.
 //
 // Amounts: a number or a decimal string is whole USDG or PT ("12.5"); a bigint is raw 6-decimal units; "all" (sell,
 // redeem) is the account's whole PT balance. Each trade names a minimum out (the quote less `slippageBps`, 1% by
@@ -43,7 +43,8 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 const VAULT_ASSET_ABI = [{ type: "function", name: "assets", stateMutability: "view", inputs: [{ name: "token", type: "address" }],
   outputs: [{ name: "feed", type: "address" }, { name: "maxAge", type: "uint64" }, { name: "tokenDecimals", type: "uint8" }, { name: "feedDecimals", type: "uint8" },
     { name: "enabled", type: "bool" }, { name: "ltvBps", type: "uint16" }, { name: "lineCap", type: "uint128" }] },
-  { type: "function", name: "openLinesOf", stateMutability: "view", inputs: [{ name: "token", type: "address" }], outputs: [{ name: "", type: "uint256" }] }];
+  { type: "function", name: "openLinesOf", stateMutability: "view", inputs: [{ name: "token", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "lendStatus", stateMutability: "view", inputs: [{ name: "token", type: "address" }], outputs: [{ name: "", type: "uint8" }] }];
 
 const iso = (expiry) => new Date(expiry * 1000).toISOString().replace(".000Z", "Z");
 const VIEW = marketOf(PENDLE_ADDR.market);
@@ -382,17 +383,35 @@ export async function ptPosition(client, account, { now } = {}) {
 }
 
 /**
- * The stock vault's listing of PT-USDG: { listed, enabled, ltvBps, lineCap, openLines, backsLines } (`backsLines`: a
- * line can open on it now); `listed` false until the Safe's setAsset. null when the vault cannot be read.
+ * The stock vault's listing of PT-USDG: { listed, enabled, ltvBps, lineCap, openLines, hold, backsLines, planned }.
+ * `hold` is the vault's lendStatus(PT-USDG), read live: 0 when it lends on it, else the hold's code (1 while the feed's
+ * price has less than the vault's 14 days of history, as until 2026-10-19 17:37:53 UTC, or the tape behind it is not
+ * current; null when it could not be read). `backsLines`: a new line can open on it now (listed, enabled, room under
+ * the shared cap, and no hold), so it turns true by itself when a hold lifts. `listed` false until the Safe's setAsset.
+ * null when the vault cannot be read.
  */
 export async function ptListing(client) {
   try {
-    const [a, open] = await Promise.all([read(client, PT_USDG.stockVault, VAULT_ASSET_ABI, "assets", [PT_USDG.token]), read(client, PT_USDG.stockVault, VAULT_ASSET_ABI, "openLinesOf", [PT_USDG.token]).catch(() => null)]);
+    const at = (fn) => read(client, PT_USDG.stockVault, VAULT_ASSET_ABI, fn, [PT_USDG.token]);
+    const [a, open, status] = await Promise.all([at("assets"), at("openLinesOf").catch(() => null), at("lendStatus").catch(() => null)]);
     const [feed, , tokenDecimals, , enabled, ltvBps, lineCap] = a;
     const listed = getAddress(feed) !== ZERO && Number(tokenDecimals) === PT_USDG.decimals;
-    return { listed, enabled: listed && enabled === true, ltvBps: Number(ltvBps), lineCap: BigInt(lineCap), openLines: open,
-      backsLines: listed && enabled === true && BigInt(lineCap) > 0n && (open === null || open < BigInt(lineCap)), planned: PT_USDG.planned };
+    const hold = listed && status !== null ? Number(status) : null;
+    return { listed, enabled: listed && enabled === true, ltvBps: Number(ltvBps), lineCap: BigInt(lineCap), openLines: open, hold,
+      backsLines: listed && enabled === true && BigInt(lineCap) > 0n && (open === null || open < BigInt(lineCap)) && hold === 0, planned: PT_USDG.planned };
   } catch (_) { return null; }
+}
+
+/** One line on the listing for a person or an agent: whether the vault takes a new PT-USDG line right now and where,
+ *  true before and after any hold (it reads `hold` live, never a date). `cap` words a cap in USDG units; `where` is
+ *  where the owner deposits it (Go mode's link). The MCP servers say it the same way. */
+export function ptListingText(l, { cap, where }) {
+  if (!l) return "The stock vault's listing could not be read just now.";
+  if (l.backsLines) return `The Priors stock vault takes PT-USDG behind an agent's line now, at up to ${l.ltvBps / 100}% of its value (all PT-USDG lines share one ${cap(l.lineCap)} cap). Deposit it with the SDK's openPtLine(agentId, amount) or in Go mode: ${where}`;
+  if (l.listed && l.enabled && l.hold === null) return "The Priors stock vault lists PT-USDG; whether it takes a new line on it right now could not be read just now.";
+  if (l.listed && l.enabled && l.hold !== 0) return `The Priors stock vault lists PT-USDG, but takes no new line on it right now. Go mode shows when it does: ${where}`;
+  if (l.listed) return "The Priors stock vault lists PT-USDG but takes no new line on it now (disabled, or the shared cap is used up).";
+  return `The Priors stock vault does not list PT-USDG yet. Once it does, PT-USDG backs an agent's line (planned: up to ${l.planned.ltvBps / 100}% of its value, one ${cap(BigInt(l.planned.lineCap))} cap for all PT-USDG lines).`;
 }
 
 /** The same figures as JSON-safe values (bigints as decimal strings), for an MCP tool or an HTTP answer. */

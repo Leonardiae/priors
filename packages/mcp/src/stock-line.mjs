@@ -99,7 +99,7 @@ export function tokenText(units, decimals, max = 6) {
 const usd = (units) => { const u = big(units), w = u / 1_000_000n, f = (u % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, ""); return `${w}${f ? "." + f.slice(0, 6) : ""}`; };
 const oneLine = (s, n) => String(s ?? "").replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, n);
 
-/** Go mode's link for the request: the Stock lines tab's deposit sheet on that token, for that agent, sized to that line
+/** Go mode's link for the request: the stock tab's deposit sheet on that token, for that agent, sized to that line
  *  (web/account-stocks.js reads ai=stock once). It carries nothing to sign: the owner's own Deposit click does it all. */
 export function stockLink(appUrl, { agentId = null, symbol, line }) {
   const u = new URL(appUrl);
@@ -109,6 +109,24 @@ export function stockLink(appUrl, { agentId = null, symbol, line }) {
   u.searchParams.set("ai_usd", usd(line));
   u.hash = "ac-stocks";
   return u.href;
+}
+
+/** PT-USDG, Pendle's principal token for USDG, by the ticker an agent would pass ("PT-USDG", "PTUSDG", "pt_usdg"). The
+ *  vault takes it on its own terms, not as one of the stock tokens: its owner deposits it in Go mode. */
+export const isPtSymbol = (symbol) => /^PT[-_ ]?USDG$/i.test(oneLine(symbol, 12));
+
+/** Go mode's link to PT-USDG: `#ac-pt` opens the place that holds everything PT-USDG (buy, sell, redeem, and deposit
+ *  it behind an agent's line), whichever tab carries it in the build the site serves. */
+export function ptLink(appUrl) {
+  const u = new URL(appUrl);
+  u.hash = "ac-pt";
+  return u.href;
+}
+
+/** stock_line_request asked for PT-USDG: not refused as an unknown token, but pointed at Go mode, where the agent's
+ *  owner deposits it (true whether or not the vault holds new PT-USDG lines at that moment: Go mode reads it live). */
+export function ptLineText(appUrl, agentId = null) {
+  return `PT-USDG lines are not requested with this tool. The agent's owner deposits PT-USDG behind ${agentId != null ? `agent #${agentId}'s` : "the agent's"} line in Go mode, where they also buy, sell and redeem it, and Go mode says whether the stock vault takes a new PT-USDG line right now: ${ptLink(appUrl)}`;
 }
 
 /**
@@ -133,13 +151,14 @@ export function stockLineRequest({ asset, vault, pool, agent = null, lineUsd, re
   if (!(n > 0) || n > 1_000_000) return { refusal: "line_usd must be above 0 and at most 1,000,000." };
   const units = BigInt(Math.round(n * 1e6));
   if (Math.abs(Number(units) / 1e6 - n) > 1e-9) return { refusal: "line_usd has more than 6 decimals (USDG has 6)." };
+  if (!asset && isPtSymbol(symbol)) return { refusal: ptLineText(appUrl, agent ? agent.id : null) };
   if (!asset) return { refusal: `${oneLine(symbol, 12) || "That token"} is not among the ${count ?? "listed"} tokens the Priors stock vault takes.` };
   const sym = asset.symbol;
   if (agent) {
     if (agent.defaulted) return { refusal: `Agent #${agent.id} has defaulted: no new line can open for it.` };
     if (agent.ownerDefaulted) return { refusal: `A default on the account that owns agent #${agent.id} stops new lines and loans for all its agents: no new line can open for it.` };
     if (agent.isRoot) return { refusal: `Agent #${agent.id} is a backer (root): backers lend their stake, they do not borrow.` };
-    if (agent.stockLine) return { refusal: `Agent #${agent.id} already has a stock line. Its owner can add stock to it in Go mode (Stock lines tab, Add stock) to raise what it can draw.` };
+    if (agent.stockLine) return { refusal: `Agent #${agent.id} already has a stock line. Its owner can add stock to it in Go mode (Add stock, on its stock line) to raise what it can draw.` };
     if (agent.sponsor && String(agent.sponsor) !== String(vault.root) && Number(agent.activeLoans) > 0) return { refusal: `Agent #${agent.id} has ${agent.activeLoans} loan(s) open on its line from backer #${agent.sponsor}. A stock line takes over the agent's backing (one backer per agent), so those loans are repaid first.` };
   }
   if (!asset.usable || Number(asset.hold || 0) !== 0) return { refusal: `The vault opens no new line on ${sym} right now${asset.holdReason ? `: ${asset.holdReason}` : " (its price is not usable now)"}. stock_assets lists the tokens that take new lines.` };

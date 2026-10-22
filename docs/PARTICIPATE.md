@@ -106,7 +106,7 @@ else.
   and whether the key is the agent's declared payment wallet, read from the ERC-8004 registry (`getAgentWallet` on the
   record's `registry`, a read only). Score v2 counts x402 income paid to the declared wallet only
   ([SCORE-v2.md](SCORE-v2.md)). The registry's `register()` declares its caller, so `join` declares the key, and a
-  transfer of the agent clears it. With none declared, a second line gives the fix: `npx -y @priors/mcp@0.9.3
+  transfer of the agent clears it. With none declared, a second line gives the fix: `npx -y @priors/mcp@0.10.0
   link-wallet --agent <id>` signs the registry's `AgentWalletSet` with `PRIORS_KEY`, and the key, the owner, sends the
   `setAgentWallet` call it prints within 4 minutes. If the registry cannot be read, the line is the key's USDG alone,
   and the exit code does not change.

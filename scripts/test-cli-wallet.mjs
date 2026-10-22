@@ -4,7 +4,7 @@
 //   - this key: one plain line, "declared: x402 income paid to it counts toward Score v2";
 //   - another address: it says so, and that x402 income counts only when paid to that address;
 //   - none (a transfer clears it): income does not count until one is declared, and the fix, `priors-mcp link-wallet
-//     --agent <id>` (@priors/mcp 0.9.3, packages/mcp/src/link-wallet.mjs);
+//     --agent <id>` (@priors/mcp 0.10.0, packages/mcp/src/link-wallet.mjs);
 //   - a registry that cannot answer (no getAgentWallet, a failed request): the wallet line as before, exit 0.
 // A `join` that registers declares its caller, as the live registry's register() does, and the
 // status after it says this key is declared.
@@ -150,7 +150,7 @@ async function check(name, over, fn) {
 const noKey = (r) => assert.ok(!r.out.toLowerCase().includes(owner.privateKey.slice(2).toLowerCase()), "the key is not printed");
 const walletPart = (r) => r.out.slice(r.out.indexOf("  wallet    "));
 const DECLARED = `  wallet    20.0 USDG at ${owner.address} (declared: x402 income paid to it counts toward Score v2)\n`;
-const FIX = (id) => `            to declare this key: \`npx -y @priors/mcp@0.9.3 link-wallet --agent ${id}\` (priors-mcp link-wallet) signs with PRIORS_KEY; send the setAgentWallet call it prints from this key, the owner, within 4 minutes\n`;
+const FIX = (id) => `            to declare this key: \`npx -y @priors/mcp@0.10.0 link-wallet --agent ${id}\` (priors-mcp link-wallet) signs with PRIORS_KEY; send the setAgentWallet call it prints from this key, the owner, within 4 minutes\n`;
 const NONE = (id) => `  wallet    20.0 USDG at ${owner.address} (no wallet declared, a transfer clears it: x402 income does not count toward Score v2 until one is)\n${FIX(id)}`;
 
 console.log("priors-v2 status: the agent's declared wallet (ERC-8004 getAgentWallet)");

@@ -1,5 +1,36 @@
 # @priors/mcp changelog
 
+## 0.10.0 (2026-10-22)
+
+- **Repay on time works with no setting.** The bundled deployment record names AutoRepay v2
+  (`0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0`, deployed 2026-10-20), so `autopay_on` turns on a plan for the agent's
+  wallet without `PRIORS_AUTOREPAY`. Versions up to 0.9.3 bundled no address, and `autopay_on` answered that it was
+  not deployed unless the variable named one.
+- The bundled PT-USDG record carries the stock vault's settings as it holds them on chain: 60% and one $1,000 cap for
+  all PT-USDG lines (0.9.3 bundled the launch settings, 50% and $250).
+- **`pay_gateway`, off by default (`PRIORS_GATEWAY=on`), and not working with Keyring yet: leave it off.** It buys
+  from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain. Most of these sellers (LLM inference, search, data) take USDC on Base. Keyring's
+  gateway takes the USDG, pays the seller itself and relays its answer, so the agent's line covers them with no Base
+  float. It calls `@priors/x402`'s `createPayer({ gateway }).payViaGateway` (0.8.0).
+  - Before anything is signed or borrowed: the seller's record must name `seller_url` when given; Keyring's quote must
+    be within `max_price_usd` and `PRIORS_GATEWAY_MAX_FEE_BPS` (default 1000) over the seller's own price; its 402
+    may ask no more than the quote, on Robinhood Chain only, and must pay `PRIORS_GATEWAY_PAYTO` when set.
+  - `pay_url`'s guards, shared rather than copied: `PRIORS_MAX_PRICE_USD`, `PRIORS_MAX_BORROW_USD`, the session caps,
+    the daily caps (`pay_url` and `pay_gateway` count together), `PRIORS_PAY_HOSTS`, one money call at a time, and the
+    record of signed, unsettled payments (the same `service_id` and `input` is sent again, never signed twice). It
+    borrows only the shortfall, raised to the pool's minimum loan.
+  - Tested against a mock Keyring (`scripts/test-mcp-gateway.mjs`). Live, on 2026-10-21, Keyring's 402 asked
+    `exact` USDG on Robinhood Chain for `0xa68a4ee3fe22340dde776601a5f67cdcf996f9e9`, then answered every signed
+    payment with another 402 or a 502: it reads `X-PAYMENT`, not the `PAYMENT-SIGNATURE` header this version sends,
+    and verified none. Nothing was settled; a later version sends what Keyring reads (`docs/X402-ROUTES.md`).
+  - Off, the server is unchanged: the tool is not listed and no answer names it. `pay_url`'s answers are unchanged.
+- `pt_position` reads the stock vault's hold on PT-USDG live (`lendStatus`): while it holds new PT-USDG credit, the
+  answer says the vault lists PT-USDG but takes no new line on it right now, and it says "takes ... now" only once the
+  hold reads 0. Where to deposit it is Go mode's PT-USDG link (go.priors.trade/account#ac-pt).
+- `stock_line_request` for PT-USDG points at that Go mode link instead of answering that it is not among the stock
+  tokens. A stock line already open points at Go mode's Add stock, with no tab name.
+- The planned settings shown before a listing are the vault's live ones (60%, one $1,000 cap for all PT-USDG lines).
+
 ## 0.9.3 (2026-10-14)
 
 - **A PT-USDG trade whose answer is lost is never said to have done nothing.** `pt_buy`, `pt_sell` and `pt_redeem` now
