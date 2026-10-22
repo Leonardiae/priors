@@ -468,7 +468,8 @@ export function checkFile(f, entry) {
 
 const keyOf = (s) => `${Number(s.chainId)}:${lc(s.contract)}`;
 const reaches = (s, from, to) => Number(s.blocks[0]) <= to && (s.blocks[1] == null || Number(s.blocks[1]) >= from);
-const sameEvents = (a, b) => ["open", "repaid", "defaulted"].every((k) => a.events[k] === b.events[k]) && a.fields.amount === b.fields.amount && a.fields.dueAt === b.fields.dueAt;
+/** Whether two declarations of a source read the same events and fields (the signatures exactly, parameter names too). */
+export const sameEvents = (a, b) => ["open", "repaid", "defaulted"].every((k) => a.events[k] === b.events[k]) && a.fields.amount === b.fields.amount && a.fields.dueAt === b.fields.dueAt;
 
 /**
  * The sources a chain covers. Each source is covered from its first block: the first statement that declares it starts

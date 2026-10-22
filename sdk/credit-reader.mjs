@@ -480,7 +480,11 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
   for (const d of defaults) {
     const c = d.file.credit;
     if (c.asset !== ref.asset || c.decimals !== ref.decimals) problems.push(`default entry ${d.entry.index}: asset ${c.asset} (${c.decimals} decimals) differs from the chain's ${ref.asset} (${ref.decimals} decimals)`);
-    if (manifest && !manifest.sources.some((m) => keyOf(m) === keyOf(c.sources[0]))) problems.push(`default entry ${d.entry.index}: source ${c.sources[0].contract} is not in the reader's manifest`);
+    // held to the manifest as a statement's sources are, events and fields too: with its own, a default entry could cite
+    // a repayment's log, or read another parameter of the same types as its amount (GHSA-6rpg)
+    const m = manifest?.sources.find((x) => keyOf(x) === keyOf(c.sources[0]));
+    if (manifest && !m) problems.push(`default entry ${d.entry.index}: source ${c.sources[0].contract} is not in the reader's manifest`);
+    else if (m && !P.sameEvents(c.sources[0], m)) problems.push(`default entry ${d.entry.index}: source ${c.sources[0].contract}'s events or fields are not the reader's manifest's`);
   }
   problems.push(...P.checkChain(chain, { manifest: manifest?.sources || null }));
   // a statement describes the past: its window ends before the block it was posted in, at the time it says
@@ -506,6 +510,10 @@ async function readWriter(ctx, reg, { writer, list, id, mode, funds, span, net, 
   const checks = [];
   for (const s of chain) for (const x of s.file.credit.anchors) checks.push({ src: s.file.credit.sources[x.src], leaf: x, where: `seq ${s.file.credit.seq}` });
   for (const d of defaults) checks.push({ src: d.file.credit.sources[0], leaf: d.file.credit.leaf, where: `default entry ${d.entry.index}` });
+  // the asset and its decimals are the files' word until a sampled loan shows that token moving at a source (the
+  // manifest pins sources, not the asset): with no anchor and no default entry, any token at any decimals would stand
+  // for the amounts the sources' logs give (GHSA-6rpg)
+  if (funds && ref && !checks.length && chain.some((s) => s.file.credit.leaves > 0)) problems.push(`asset ${ref.asset}: its statements close loans but carry no anchor, and there is no default entry: the asset's movement cannot be checked, so the asset and its decimals are not tied to the sources`);
   const res = await pool(checks, 6, (c) => verifyLeaf(ctx, c.src, id, c.leaf, { asset: fundsAsset }).then((p) => p.map((x) => `${c.where}: ${x}`)));
   problems.push(...res.flat());
   // a default entry must be covered by a statement that counts it, once one covers its block

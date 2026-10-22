@@ -770,6 +770,91 @@ await t("12. a manifest that does not name a trusted writer fails that writer, n
   assert.deepEqual([byWriter(r, W1).status, byWriter(r, W2).status, r.totals.writers, r.totals.onTime.count], ["rebuilt", "failed", 1, 1]);
 });
 
+// ---- 13. what ties a writer's asset and its default entries to the reader's sources (GHSA-6rpg) ---------------------
+await t("13. the asset is tied to what the sources moved: statements that close loans with no anchor and no default entry fail a read that checks funds (GHSA-6rpg)", async () => {
+  const FAKE0 = ethers.getAddress("0x0000000000000000000000000000000000000DEC"); // decimals() 0, symbol() "USDG"
+  const run = ({ asset = assetOf(USDG), decimals = 6, anchors = true, to = 150, close = true } = {}) => {
+    const { chain, A } = world();
+    chain.token(FAKE0, 0, "USDG");
+    A.borrow(1, AGENT, 5_000_000, 110); // 5 USDG out of the pool
+    if (close) A.close(1, 120); // and back, on time
+    const f = statement({ sources: [A.source()], from: 100, to, w: A.window(AGENT, 100, to), asset, decimals });
+    if (!anchors) f.credit.anchors = [];
+    chain.postEnc(W1, AGENT, to + 1, P.encodeFile(f));
+    return pin({ [W1]: [A.source()] });
+  };
+  // the report's statement: the pool's 5,000,000 base units stated in a 0-decimal token named USDG, with no anchor
+  let man = run({ asset: assetOf(FAKE0), decimals: 0, anchors: false });
+  let r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: man });
+  assert.equal(r.writers[0].status, "failed", `5 USDG counted as ${JSON.stringify(r.totals?.onTime)} at ${r.totals?.decimals} decimals (problems ${JSON.stringify(r.writers[0].problems)})`);
+  assert.match(probs(r), /no anchor, and there is no default entry/);
+  assert.deepEqual(r.counted, {});
+  r = await read(AGENT, { writers: [W1], mode: "light", funds: true, manifest: man }); // the hosted credit_history's mode
+  assert.equal(r.writers[0].status, "failed");
+  let c = await withManifest(man, (f) => cli([String(AGENT), "--writer", W1, "--full", "--sources", f]));
+  assert.equal(c.code, 1, c.out);
+  // with its anchor, the same file already failed: the anchor's funds check is what ties the asset
+  man = run({ asset: assetOf(FAKE0), decimals: 0 });
+  r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: man });
+  assert.match(probs(r), /the lender paid out less than the principal/);
+  // the real token with no anchor: nothing ties it either, so it fails the same way; without --no-funds nothing is said
+  man = run({ anchors: false });
+  r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: man });
+  assert.match(probs(r), /no anchor, and there is no default entry/);
+  r = await read(AGENT, { writers: [W1], mode: "full", funds: false, manifest: man });
+  assert.deepEqual([r.writers[0].status, r.writers[0].problems], ["rebuilt", []]);
+  // unchanged: an honest statement with its anchor, and one that closes no loan (nothing to anchor, nothing closed)
+  man = run();
+  r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: man });
+  assert.deepEqual([r.writers[0].status, r.totals.onTime.amount, r.totals.decimals], ["rebuilt", "5000000", 6]);
+  man = run({ close: false });
+  r = await read(AGENT, { writers: [W1], mode: "full", funds: true, manifest: man });
+  assert.deepEqual([r.writers[0].status, r.writers[0].problems, r.writers[0].claimed.outstanding.count], ["rebuilt", [], 1]);
+});
+
+await t("13. a default entry's source is held to the reader's manifest, events and fields too: it cannot cite a repayment's log or read another parameter as its amount (GHSA-6rpg)", async () => {
+  // (a) the report's default entry: repaid and defaulted swapped in its source, citing loan 2's Repaid log
+  let { chain, A } = world();
+  chain.postEnc(W1, AGENT, 151, P.encodeFile(statement({ sources: [A.source()], from: 100, to: 150, w: A.window(AGENT, 100, 150) })));
+  A.borrow(2, AGENT, 5_000_000, 160);
+  const repaid = A.close(2, 170); // repaid on time
+  const swapped = { ...A.source(), events: { ...EV, repaid: EV.defaulted, defaulted: EV.repaid } };
+  const def = (source, leaf, at) => chain.postEnc(W1, AGENT, at, P.encodeFile(P.defaultFile({ chainId: CHAIN, identityRegistry: IDR, writer: W1, agentId: AGENT, asset: assetOf(USDG), decimals: 6, source, leaf: { ...leaf, src: 0 }, createdAt: time(at) })));
+  def(swapped, { ...repaid, outcome: P.DEFAULTED }, 171);
+  let man = pin({ [W1]: [A.source()] });
+  for (const mode of ["full", "light"]) {
+    const r = await read(AGENT, { writers: [W1], mode, manifest: man });
+    assert.equal(r.writers[0].status, "failed", `${mode}: a repaid loan read as a default (${r.writers[0].defaults} default entries, problems ${JSON.stringify(r.writers[0].problems)})`);
+    assert.match(probs(r), /default entry 2: source 0x[0-9a-fA-F]{40}'s events or fields are not the reader's manifest's/);
+  }
+  // (b) a real 500 USDG default reported at its fourth parameter (sharesBurnt, 0.01): the same types, two names swapped
+  ({ chain } = world());
+  const EV2 = { open: "Borrowed(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee, uint64 dueAt)", repaid: "Repaid(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 fee)", defaulted: "Defaulted(uint256 indexed loanId, uint256 indexed agentId, uint256 principal, uint256 sharesBurnt)" };
+  const LI2 = new ethers.Interface(Object.values(EV2).map((s) => `event ${s}`));
+  const src2 = { chainId: CHAIN, contract: POOL(5), blocks: [100, null], events: EV2, fields: { amount: "principal", dueAt: "dueAt" } };
+  chain.postEnc(W1, AGENT, 151, P.encodeFile(statement({ sources: [src2], from: 100, to: 150, w: { leaves: [], opened: zero(), outstanding: zero() } })));
+  const dueAt = time(160) + 100;
+  const o = chain.tx(160, [{ address: USDG, ...ERC20.encodeEventLog("Transfer", [POOL(5), WALLET, 500_000_000]) }, { address: POOL(5), ...LI2.encodeEventLog("Borrowed", [9, AGENT, 500_000_000, 0, dueAt]) }]);
+  const d = chain.tx(170, [{ address: POOL(5), ...LI2.encodeEventLog("Defaulted", [9, AGENT, 500_000_000, 10_000]) }]);
+  const leaf = { cls: "unsecured", loan: "9", amount: "10000", dueAt, closedAt: time(170), outcome: P.DEFAULTED, block: 170, tx: d.hash, log: d.logs[0].index, openBlock: 160, openTx: o.hash, openLog: o.logs[1].index };
+  const renamed = { ...src2, events: { ...EV2, defaulted: "Defaulted(uint256 indexed loanId, uint256 indexed agentId, uint256 sharesBurnt, uint256 principal)" } };
+  def(renamed, leaf, 171);
+  chain.mine(170 + 43_300); // the default is more than 24 hours old: unreported, it would fail the writer
+  man = pin({ [W1]: [src2] });
+  let r = await read(AGENT, { writers: [W1], mode: "full", manifest: man });
+  assert.equal(r.writers[0].status, "failed", `a 500 USDG default passed as 0.01 (problems ${JSON.stringify(r.writers[0].problems)})`);
+  assert.match(probs(r), /default entry 2: source .*'s events or fields are not the reader's manifest's/);
+  // the same entry with the manifest's own events was always caught: its amount is not the principal on chain
+  ({ chain } = world());
+  chain.postEnc(W1, AGENT, 151, P.encodeFile(statement({ sources: [src2], from: 100, to: 150, w: { leaves: [], opened: zero(), outstanding: zero() } })));
+  chain.tx(160, [{ address: USDG, ...ERC20.encodeEventLog("Transfer", [POOL(5), WALLET, 500_000_000]) }, { address: POOL(5), ...LI2.encodeEventLog("Borrowed", [9, AGENT, 500_000_000, 0, dueAt]) }]);
+  chain.tx(170, [{ address: POOL(5), ...LI2.encodeEventLog("Defaulted", [9, AGENT, 500_000_000, 10_000]) }]);
+  def(src2, leaf, 171);
+  chain.mine(170 + 43_300);
+  r = await read(AGENT, { writers: [W1], mode: "full", manifest: man });
+  assert.match(probs(r), /loan 9: amount 500000000 on chain, 10000 in the file/);
+});
+
 srv.close();
 console.log(`\n${passed} passed${failed.length ? `, ${failed.length} failed:\n  ${failed.join("\n  ")}` : ""}`);
 process.exit(failed.length ? 1 : 0);

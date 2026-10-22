@@ -286,7 +286,9 @@ A reader:
 - SHOULD check that the asset moved for those loans: at least the principal out of the source when the loan opened
   (default leaves too), and at least the principal into it on repayment. A reader that checks funds MUST treat an
   asset that is not an ERC-20 on the sources' chain, or whose `decimals()` is not `decimals`, as a failure, not as a
-  reason to skip the check;
+  reason to skip the check. Those loans are the only tie between the files' `asset` and `decimals` and the sources (a
+  manifest pins sources, not the asset), so such a reader MUST also fail a chain whose statements close loans but carry
+  no anchor, when the writer has no default entry for the agent;
 - MUST NOT present the totals of a statement it has not rebuilt as checked, nor add them to totals it reports as
   checked. Without a rebuild they are the writer's claims;
 - MUST NOT add a writer's rebuilt totals to totals it reports as checked unless it holds a manifest naming that writer
