@@ -1,5 +1,16 @@
 # @priors/mcp changelog
 
+## 0.10.1 (2026-10-22)
+
+- **`pay_url` no longer times out for a wallet with no `PRIORS_AGENT_ID`.** Since 0.10.0 bundles AutoRepay's address,
+  `pay_url` keeps back what Autopay pulls in the next 24 h, which first looks up the wallet's agent in the registry's
+  logs (some 470 reads on chain 4663). 0.10.0 waited for that lookup with no bound and repeated it before every
+  payment, so a payment from a wallet that owns no agent, or whose agent the lookup is slow to find, ran out of its
+  45 s. The lookup now gets a quarter of the call's budget (10 s at most) and keeps nothing back when it runs out, as a
+  failed Autopay read always did; a wallet found to own no agent is not looked up again for 10 minutes, unless another
+  tool (such as `credit_status`) has found its agent since, and then its plan is read at once. With
+  `PRIORS_AGENT_ID` set, nothing changes. `fund_base`'s reserve is the same code. Use 0.10.1 rather than 0.10.0.
+
 ## 0.10.0 (2026-10-22)
 
 - **Repay on time works with no setting.** The bundled deployment record names AutoRepay v2

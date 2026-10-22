@@ -854,7 +854,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     const mine = await credit.agentsOf(wallet.address);
     if (mine.length === 1) return (agentCache = mine[0]);
     if (mine.length > 1) throw new ToolError(`This wallet owns several agent identities (${mine.map((i) => "#" + i).join(", ")}). Set PRIORS_AGENT_ID or pass agent_id.`);
-    throw new ToolError("This wallet owns no Priors agent identity minted to it since the v2 deploy and held ever since. Set PRIORS_AGENT_ID if it owns an older one, or one that left it and came back, or register first (`npx priors-v2 join`, from a clone of github.com/priors-agents/priors).");
+    throw Object.assign(new ToolError("This wallet owns no Priors agent identity minted to it since the v2 deploy and held ever since. Set PRIORS_AGENT_ID if it owns an older one, or one that left it and came back, or register first (`npx priors-v2 join`, from a clone of github.com/priors-agents/priors)."), { noAgent: true });
   }
 
   function needWallet(action) {
@@ -899,13 +899,23 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     return autopay;
   }
   /** What pay_url keeps back: what the wallet's Autopay plan pulls for loans whose window opens in the next 24 h. A
-   *  failed read keeps nothing back (the payment goes on as before) and is never an error. */
+   *  failed read keeps nothing back (the payment goes on as before) and is never an error. Without PRIORS_AGENT_ID the
+   *  wallet's agent is looked up first, in the registry's logs: that lookup gets a quarter of the call's budget (10 s at
+   *  most), and a wallet it finds owning no agent, so with no plan to keep anything for, is not looked up again for 10
+   *  minutes, unless another tool has found its agent since (0.10.0 waited for the lookup with no bound before every
+   *  payment, so a payment from such a wallet ran out of time). */
+  const RESERVE_LOOKUP_MS = Math.min(10_000, Math.floor(callBudgetMs / 4));
+  let noAgentUntil = 0;
   async function autopayReserve() {
     if (!reserveOn || !autopay || !wallet) return 0n;
+    if (agentCache === null && Date.now() < noAgentUntil) return 0n;
     try {
-      const id = await resolveAgent();
+      const id = await withinTime(resolveAgent(), RESERVE_LOOKUP_MS);
       return A.autopayReserve(await withinTime(autopay.status(wallet.address, id), 10_000));
-    } catch (_) { return 0n; }
+    } catch (e) {
+      if (e?.noAgent) noAgentUntil = Date.now() + 600_000;
+      return 0n;
+    }
   }
   /** Autopay lines for credit_status: the wallet's plan, its budget, the next loan it pays, a shortfall. */
   async function autopayLines(id) {

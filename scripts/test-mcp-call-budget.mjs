@@ -305,6 +305,50 @@ await test("GHSA-cq9v: pay_url too: one still borrowing once its hold has ended 
   assert.ok(!rest.error && /Paid 0\.20 USDG/.test(rest.text), `once the first has ended, its 1.00 counts once (1.00 + 0.20 = 1.20): ${rest.text.slice(0, 160)}`);
 });
 
+// 0.10.1: with AutoRepay's address known (bundled since 0.10.0) and no PRIORS_AGENT_ID, pay_url's Autopay reserve first
+// looks up the wallet's agent in the registry (some 470 log reads on chain 4663). 0.10.0 waited for that lookup with no
+// bound and looked again before every payment, so a wallet owning no agent ran each pay_url out of its 45 s.
+const reserveServer = (st, m, credit) => connect({ PRIORS_SAVINGS_VAULT: "off" },
+  { provider: new StallingPool(st), credit, autopay: { status: async () => { throw new Error("no status read without an agent"); } }, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 4_000, holdMaxMs: HOLD }, 5_500, m.fetchImpl);
+
+await test("0.10.1: pay_url with Autopay known and no PRIORS_AGENT_ID: an agent lookup that never answers keeps nothing back after its bound, and the payment is made within the call's budget", async () => {
+  const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n });
+  const call = await reserveServer(st, m, { isController: async () => true, agentsOf: () => new Promise(() => {}) });
+  const t0 = Date.now();
+  const r = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });
+  assert.ok(!r.timedOut && !r.error && /Paid 0\.10 USDG/.test(r.text), r.text.slice(0, 200));
+  assert.ok(Date.now() - t0 < 4_000, `answered in ${Date.now() - t0} ms, within the 4 s budget`);
+  assert.deepEqual(m.paid, ["/a"]);
+});
+
+await test("0.10.1: a wallet the lookup finds owning no agent is looked up once, not before every payment, and each payment keeps nothing back", async () => {
+  const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n, "/b": 100_000n });
+  let lookups = 0;
+  const call = await reserveServer(st, m, { isController: async () => true, agentsOf: async () => { lookups++; return []; } });
+  const a = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });
+  const b = await call("pay_url", { url: "https://merchant.example/b", max_price_usd: 0.1 });
+  assert.ok(!a.error && /Paid 0\.10 USDG/.test(a.text), a.text.slice(0, 200));
+  assert.ok(!b.error && /Paid 0\.10 USDG/.test(b.text), b.text.slice(0, 200));
+  assert.equal(lookups, 1, `the registry searched ${lookups} times for two payments`);
+});
+
+await test("0.10.1: once another tool finds the wallet's agent (it registered one), the reserve reads Autopay again at once, whatever an earlier no-agent answer said", async () => {
+  const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n, "/b": 100_000n });
+  let owned = [], statusReads = 0;
+  const credit = { isController: async () => true, agentsOf: async () => owned, status: async () => ({ enrolled: false, line: 0n, openLoans: [] }) };
+  const call = await connect({ PRIORS_SAVINGS_VAULT: "off" },
+    { provider: new StallingPool(st), credit, autopay: { status: async () => { statusReads++; throw new Error("a plan's read, failing: keeps nothing back"); } }, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 4_000, holdMaxMs: HOLD }, 5_500, m.fetchImpl);
+  const a = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });
+  assert.ok(!a.error && /Paid 0\.10 USDG/.test(a.text), a.text.slice(0, 200));
+  assert.equal(statusReads, 0, "no agent yet: no Autopay read");
+  owned = [7n]; // the wallet registers an agent; credit_status finds it
+  const s = await call("credit_status", {});
+  assert.ok(/Agent #7/.test(s.text), s.text.slice(0, 160));
+  const b = await call("pay_url", { url: "https://merchant.example/b", max_price_usd: 0.1 });
+  assert.ok(!b.error && /Paid 0\.10 USDG/.test(b.text), b.text.slice(0, 200));
+  assert.equal(statusReads, 1, `the reserve read the plan of agent #7 ${statusReads} times for the payment made once it was known`);
+});
+
 await test("GHSA-cq9v: save too: a save still running once its hold has ended keeps its amount counted against PRIORS_MAX_SAVE_TOTAL_USD", async () => {
   const s = stalling("save");
   const call = await connect({ PRIORS_MAX_SAVE_USD: "50", PRIORS_MAX_SAVE_TOTAL_USD: "60" }, { credit: s.credit, callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500);
