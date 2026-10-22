@@ -41,12 +41,13 @@
   },
   "recordBonus": {
     "trustedRoots": [
-      6228
+      6228,
+      8793
     ],
-    "trustedRootsAre": "treasury v4 only. Not the seat vaults: an owner can seat its own agent with its own $PRIORS and get the fees back, so their fees are not someone else's risk.",
+    "trustedRootsAre": "the treasuries: v4 (root #6228) and v5 (root #8793, added 2026-10-14). Not the seat vaults: an owner can seat its own agent with its own $PRIORS and get the fees back, so their fees are not someone else's risk.",
     "feeStep": 50000,
     "bpsPerStep": 100,
     "maxBonusBps": 1500,
-    "scale": "a step is 0.05 USDG of sponsor fees paid under the treasury since 2026-10-12 (0.5 from 2026-10-10, 0.02 at deployment): at the live pool (1% per 30 days, 25% to the sponsor) about 600 dollar-days of treasury credit repaid. +1 point per step on a 50% stock, scaled down with the stock's own loan-to-value (a 25% stock gets half), at most +15 on a 50% stock (about 9,000 dollar-days). Never above 70% in total. Retune with the pool's fee params."
+    "scale": "a step is 0.05 USDG of sponsor fees paid under the treasuries since 2026-10-12 (0.5 from 2026-10-10, 0.02 at deployment): at the live pool (1% per 30 days, 25% to the sponsor) the fees of about 600 dollar-days of stated loan terms, whether or not the loans are held (the pool charges a loan's whole term even when it is repaid early, so the bonus prices fees paid, not time held: GHSA-67c5, GHSA-hxj6). +1 point per step on a 50% stock, scaled down with the stock's own loan-to-value (a 25% stock gets half), at most +15 on a 50% stock (about 9,000 dollar-days of stated terms, 0.75 USDG of sponsor fees). Never above 70% in total. Retune with the pool's fee params."
   }
 }
