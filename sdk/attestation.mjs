@@ -32,6 +32,8 @@ export const ABOUT = "https://github.com/priors-agents/priors/blob/main/docs/ATT
 /** The published attester, named by /api/check: only this address's entries are Priors'. Owns no agent. */
 export const ATTESTER = "0x613854463BB854225306b9b18bdb451A78430a73";
 export const TAG1 = "priors-score";
+/** The words of a note posted because the agent changed owner (`priors.ownerChanged.note`). */
+export const OWNER_CHANGED = "This agent changed owner since Priors' last note. Its Priors score counts the record from the new owner.";
 
 export const REGISTRY_ABI = [
   "function giveFeedback(uint256 agentId, int128 value, uint8 valueDecimals, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)",
@@ -111,11 +113,15 @@ export function evidenceOf(snap, a, loansOf, tx, { proofLoans = PROOF_LOANS } = 
   if (a.isRoot) backing.stake = usdg(int(a.stake));
   const c = a.collateral;
   if (c && !c.error && c.token) backing.collateral = { token: c.token, symbol: c.symbol ?? null, amount: units(c.amount, c.decimals), value: c.value == null ? null : usdg(c.value) };
+  // the agent's owner at the snapshot's block (the registry's ownerOf, as the snapshot reads it): the attester posts a
+  // new note when it changes (docs/ATTESTATION-v2.md, "Owner")
+  const owner = ethers.isAddress(String(a.owner || "")) ? lc(a.owner) : null;
   return {
     line: { limit: usdg(int(a.capacity)), available: usdg(availableOf(a)), drawn: usdg(int(a.principalOut)) },
     repaid: { onTime, usdg: usdg(onTimeBase), late, last },
     defaults, defaulted: !!a.defaulted,
     backing,
+    ...(owner ? { owner } : {}),
     ...(paid ? { pay: { loan: int(paid.id), tx: tx.borrowed.get(`v2:${int(paid.id)}`), principal: usdg(int(paid.principal)) } } : {}),
   };
 }
@@ -143,7 +149,8 @@ export function evidenceIndex(snap, { ids = null, proofLoans = PROOF_LOANS } = {
 const iso = (t) => new Date(Number(t) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /**
- * The note's file. `p`: the planned entry ({ agentId, value, rung, version, tag2 }); `s`: the agent's published score
+ * The note's file. `p`: the planned entry ({ agentId, value, rung, version, tag2 }, and `why` "owner" with `prevOwner`
+ * for a note posted because the agent changed owner); `s`: the agent's published score
  * entry (detail, components); `ev`: its evidence; `idx`: the evidence index head (block, blockTime, pool, v1Pool);
  * `attester`; `createdAt` (unix seconds); `payment`: { to } read from the borrow transaction, or null.
  * Key order is fixed, so the same inputs give the same bytes and the same hash.
@@ -168,6 +175,9 @@ export function attestationFile({ p, s, ev, idx, attester, createdAt, tag1 = "pr
     v: SCHEMA,
     block: Number(idx.block), blockTime: Number(idx.blockTime),
     pool, ...(ev.repaid.last.some((x) => x.era === "v1") && idx.v1Pool ? { v1Pool: ethers.getAddress(idx.v1Pool) } : {}),
+    // the owner the score is for, and on the note posted because it changed, the one before it (docs/ATTESTATION-v2.md)
+    ...(ev.owner ? { owner: ethers.getAddress(ev.owner) } : {}),
+    ...(p.why === "owner" && p.prevOwner ? { ownerChanged: { from: ethers.getAddress(p.prevOwner), note: OWNER_CHANGED } } : {}),
     score: Number(p.value), rung: Number(p.rung), weights: String(p.version),
     line: ev.line,
     repaid: { onTime: ev.repaid.onTime, usdg: ev.repaid.usdg, last: ev.repaid.last.map((x) => ({ ...x })) },

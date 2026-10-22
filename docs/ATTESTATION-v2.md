@@ -102,6 +102,11 @@ Real shape, built from the live snapshot of block 80,894,837 (addresses and hash
 - `income`: Score v2's counted x402 income (`detail.incomeUsdg`: payers in the 30-day window, netted, dust left out,
   before caps and weights), the payers that count, and the income component's points.
 - `paid`: the loan behind `proofOfPayment` and its principal.
+- `owner` (since 2026-10-19): the agent's owner at `block` (the registry's `ownerOf`, as the
+  snapshot reads it), the owner the score is for. On a note posted because the owner changed, `ownerChanged`:
+  `{ "from": <the owner the previous note named>, "note": "This agent changed owner since Priors' last note. Its Priors
+  score counts the record from the new owner." }`. Both are added fields (same `priors.v`), so no live note is
+  re-posted for them; they appear from each agent's next note on.
 - Size: 1,059 to 1,434 bytes across the first 30 notes posted (2026-10-05, 18:19 UTC; median 1,429 with five proofs,
   full hashes and addresses); `encodeFile` drops the oldest proofs, never a total, if a file would pass 2 KB.
 
@@ -139,6 +144,11 @@ Added with v2:
   would oversell it. `available` and `drawn` move with every loan and never trigger a note.
 - **Schema.** An entry posted before the current file schema (`priors.v`) is re-posted once, last in line, at most 30 a
   pass. A defaulted agent's 0 is never re-posted.
+- **Owner** (2026-10-19). A note re-posts at once, right after a default, when the owner the
+  evidence index names differs from the one recorded with the live note: the new note carries the score as it is
+  then, `owner`, and `ownerChanged` with the owner before. A note posted before owners were recorded gets its owner
+  recorded by the next pass with no post (a change between that note and the recording is not told); a defaulted
+  agent's 0 stays whoever holds it.
 
 A pass posts nothing when its evidence is not at the scores' block.
 
