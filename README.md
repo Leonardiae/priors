@@ -221,8 +221,8 @@ can also keep idle USDG in savings (a USDG vault on Morpho: the agent's own mone
 time from the agent's wallet) is in the packages, through AutoRepay v2, deployed on 2026-10-20 at
 `0x72B510AF4e66e5960aB9b975e0BdCf80239e83A0` (`autoRepay` in `deployments/4663.v2.json`). `@priors/x402/autopay`
 takes that address from its caller; `@priors/mcp`'s `autopay_on` reads it from `PRIORS_AUTOREPAY`, else from its
-bundled deployments file, which carries it only in versions published after that date (0.9.3 and earlier bundle none:
-set `PRIORS_AUTOREPAY` there). 0.2.11 carries 0.5.0's security fixes for those staying on the 0.2 line.
+bundled deployments file. `@priors/mcp` 0.10.0 bundles AutoRepay v2's address, so Autopay needs no setting there;
+0.9.3 and earlier bundle none (set `PRIORS_AUTOREPAY` on those). 0.2.11 carries 0.5.0's security fixes for those staying on the 0.2 line.
 
 ### Or pay per call
 
