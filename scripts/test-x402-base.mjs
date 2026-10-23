@@ -276,6 +276,8 @@ function fakeCredit({ usdg = 10_000_000n, borrowGap, loans = [], minLoan } = {})
     quote: async (id, amount, term) => ({ amount, term, fee: 50_000n, due: amount + 50_000n }),
     borrow: async (id, amount, term) => { rec.push(["borrow", amount]); return { hash: TX("11"), loanId: 43n, principal: amount, fee: 50_000n, dueAt: NOW() + Number(term) }; },
     isController: async () => true,
+    agentOwner: async () => ME,
+    agentWallet: async () => ME, // GHSA-9pw7: this wallet is the agent's owner here (ME), so a money tool may act
     agentsOf: async () => [7n],
     borrowGap: async (o) => { rec.push(["borrowGap", o]); if (borrowGap) return borrowGap(o); return { borrowed: o.price - o.balance > 5_000_000n ? o.price - o.balance : 5_000_000n, loanId: 42n, dueAt: BigInt(NOW() + 7 * 86400), fee: 50_000n, term: 604_800n }; },
   };
@@ -863,7 +865,9 @@ export async function runX402BaseTests({ test, fork = false }) {
     };
     const signer = new ethers.Wallet(KEY);
     /** fakeCredit with the real borrowGap (credit.mjs: price above maxBorrow refused, then max(gap, minLoan) against it). */
-    const realCredit = (usdg, pool, minLoan = 5_000_000n) => ({ ...fakeCredit({ usdg, minLoan }), borrowGap: (o) => realBorrowGap({ signer, pool, ...o }) });
+    const realCredit = (usdg, pool, minLoan = 5_000_000n) => ({ ...fakeCredit({ usdg, minLoan }),
+      // the server's facade hands borrowGap the agent's parties from its own registry (GHSA-9pw7); ME is the owner here
+      borrowGap: (o) => realBorrowGap({ signer, pool, ownerOf: async () => ME, agentWalletOf: async () => ME, ...o }) });
     const atomic = /\b\d{6,}\b|\[[A-Z_]+\]|pay: /; // atomic units, an error code or the payer's wording: none in a fund_base answer
 
     // 8 to move, 2 held: a 6 gap, above the minimum loan. The answer names 6; max_borrow_usd 6 borrows exactly 6.
