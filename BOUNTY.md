@@ -141,7 +141,7 @@ Every issue listed in [docs/SECURITY-v2.md](docs/SECURITY-v2.md), whether fixed,
 or a trust assumption, is known. A report of one is not a new finding and is not paid at any tier; if it adds
 something real (a cleaner reproduction, a tighter measurement) we will credit it in public. That includes the
 residuals added after launch: SO-1 and SO-2 (stake held only while marking a default) and AI-1 (the invite bot's
-self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-19. V-2 (seat levers and ownership
+self-service mode, now priced by `InviteBond`), and the stock vault's SV-1 to SV-20. V-2 (seat levers and ownership
 not reaching open seats) is fixed in `SeatVaultV3`; a path that still gets around those fixes on V3 is a new finding.
 
 What still counts is a new root cause, or a path that beats the bound stated for a listed issue: reaching lender
