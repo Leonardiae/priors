@@ -505,6 +505,134 @@ await check("index (live 2026-10-23): a netting backfill longer than a run's tim
   assert.deepEqual(r.state.transfers.map((x) => [x.to, x.amount, x.block]), [[lc(P2), "500000", 3 * M], [lc(P2), "250000", 27 * M]], "every window of the chain read once");
 });
 
+await check("index (live 2026-10-23): the netting backfills not started yet are read in one scan per kind, over the union of their wallets and payers: each gets exactly the transfers its own scan finds, and each payer stops waiting once its own range is read", async () => {
+  // Live, 29 backfills waited at block 1, each to read the same chain again on its own. Here two of each kind, with
+  // overlapping wallets and payers, and transfers that only the union of a kind's addresses matches (no backfill's pair)
+  const W3 = A(0xe3), W4 = A(0xe4), P3 = A(0xf3), HEAD = 100;
+  const transfers = [
+    { from: W1, to: P2, amount: 100, block: 15 }, // A's
+    { from: W2, to: P2, amount: 101, block: 65 }, // past A's range
+    { from: W3, to: P2, amount: 102, block: 20 }, // C's (W3's netting toward P1 and P2), not A's (W3 is not A's)
+    { from: W3, to: P3, amount: 103, block: 40 }, // B's; in the union of the wallets kind, but neither C's pair nor D's
+    { from: W2, to: P3, amount: 104, block: 50 }, // B's
+    { from: W4, to: P1, amount: 105, block: 30 }, // D's
+    { from: W4, to: P3, amount: 106, block: 95 }, // D's
+    { from: W1, to: P1, amount: 107, block: 25 }, // nobody's: W1 toward P1 was read before
+    { from: W3, to: P1, amount: 108, block: 80 }, // past C's range
+    { from: W3, to: P3, amount: 109, block: 92 }, // past B's range, and not a pair of the wallets kind
+  ];
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 11 }, { payer: P2, payTo: W1, amount: 1_000_000, block: 12 }, { payer: P3, payTo: W2, amount: 1_000_000, block: 13 }],
+    transfers, wallets: { 1: W1, 2: W2, 3: W3, 4: W4 } });
+  const snap = snapOf([agent(1, W1), agent(2, W2), agent(3, W3), agent(4, W4)]);
+  const o = (extra = {}) => opts(snap, HEAD, { transfersChunk: 10, ...extra });
+  const built = (await updateIncome(chain, null, o())).state;
+  assert.deepEqual([built.payers, built.from, built.transfersTo], [[P1, P2, P3].map(lc), [W1, W2, W3, W4].map(lc), HEAD]);
+  // the same index with its netting still to read: two payers' backfills and two wallets' backfills, none started
+  const bfs = [
+    { kind: "payers", from: [W1, W2].map(lc), to: [lc(P2)], next: 1, until: 60 }, // A
+    { kind: "payers", from: [W1, W2, W3].map(lc), to: [lc(P3)], next: 1, until: 90 }, // B
+    { kind: "wallets", from: [lc(W3)], to: [P1, P2].map(lc), next: 1, until: 70 }, // C
+    { kind: "wallets", from: [lc(W4)], to: [P1, P2, P3].map(lc), next: 1, until: 100 }, // D
+  ];
+  const waiting = { ...built, transfers: [], transferBackfills: bfs };
+  // what each backfill's own scan finds
+  const own = [];
+  for (const bf of bfs) own.push(...(await scanTransfers(chain, { usdg: A(7), from: bf.from, to: bf.to, fromBlock: bf.next, toBlock: bf.until, chunk: 10 })).transfers);
+  const ids = (xs) => [...new Set(xs.map((x) => x.id))].sort();
+  assert.deepEqual(own.map((x) => Number(x.amount)).sort(), [100, 102, 103, 104, 105, 106], "the separate scans' transfers (the reference)");
+  const isNet = (c) => c.kind === "transfer" && Array.isArray(c.t1) && c.from <= HEAD;
+  const kindOfCall = (c) => (c.t1.map(lc).includes(topic(W1).toLowerCase()) ? "payers" : "wallets");
+
+  // one run with time for everything
+  chain.calls.length = 0;
+  const r = await updateIncome(chain, waiting, o());
+  assert.deepEqual(ids(r.state.transfers), ids(own), "each backfill got exactly the transfers its own scan finds");
+  assert.deepEqual([r.state.transferBackfills, r.pending], [[], { payers: [], wallets: [] }]);
+  const nets = chain.calls.filter(isNet);
+  assert.equal(nets.length, 9 + 10, `one query a window for each kind: the payers' to block 90, the wallets' to block 100 (asked: ${nets.length}, separate scans 6 + 9 + 7 + 10 = 32)`);
+
+  // runs of five queries each: a backfill stops waiting in the run that reads its last block, not when its kind's scan ends
+  const real = Date.now;
+  let clock = real();
+  const inner = chain.getLogs.bind(chain);
+  chain.getLogs = async (f) => { const out = await inner(f); if (f.topics[0] === TOPICS.TRANSFER && Array.isArray(f.topics[1])) clock += 1000; return out; };
+  Date.now = () => clock;
+  chain.calls.length = 0;
+  let s = waiting, runs = 0;
+  const readTo = { payers: 0, wallets: 0 };
+  try {
+    while (s.transferBackfills.length && runs < 10) {
+      const before = chain.calls.length;
+      const step = await updateIncome(chain, s, o({ deadline: clock + 4_500 }));
+      s = step.state; runs++;
+      for (const c of chain.calls.slice(before).filter(isNet)) readTo[kindOfCall(c)] = Math.max(readTo[kindOfCall(c)], c.to);
+      const left = (bf) => s.transferBackfills.some((x) => x.kind === bf.kind && x.until === bf.until);
+      for (const bf of bfs) assert.equal(left(bf), bf.until > readTo[bf.kind], `run ${runs}: the backfill to ${bf.until} waits exactly while its own range is unread (${bf.kind} read to ${readTo[bf.kind]})`);
+      assert.deepEqual(step.pending.payers, bfs.filter((bf) => bf.kind === "payers" && left(bf)).flatMap((bf) => bf.to).sort(), `run ${runs}: pending payers`);
+      assert.deepEqual(step.pending.wallets, bfs.filter((bf) => bf.kind === "wallets" && left(bf)).flatMap((bf) => bf.from).sort(), `run ${runs}: pending wallets`);
+      const got = new Set(s.transfers.map((x) => x.id));
+      assert.ok([...got].every((id) => own.some((x) => x.id === id)), `run ${runs}: no transfer that no backfill's own scan finds`);
+      for (const bf of bfs.filter((x) => !left(x))) {
+        const mine = own.filter((x) => x.block <= bf.until && bf.from.includes(x.from) && bf.to.includes(x.to));
+        assert.ok(mine.every((x) => got.has(x.id)), `run ${runs}: the backfill to ${bf.until} has all its transfers once it stops waiting`);
+      }
+    }
+  } finally { Date.now = real; }
+  assert.deepEqual(ids(s.transfers), ids(own));
+  assert.equal(chain.calls.filter(isNet).length, 19, "every window read once over the runs");
+});
+
+await check("index (live 2026-10-23): from the live index's shape, on a node that serves 10,000 blocks a query, every netting backfill is read within 50 steps", async () => {
+  // The index of 2026-10-23 18:45 UTC (KV income:v1): 30 netting backfills, the first at block 39,000,001 of
+  // 85,362,903, the other 29 not started: [kind, wallets, payers, next, until]. The paid node behind INCOME_RPC answers
+  // eth_getLogs over at most 10,000 blocks (HTTP 413, -32614 "eth_getLogs is limited to a 10,000 range"; probed on the
+  // private node, the same provider): a 100,000-block window went out as 15 refusals and 16 queries of 6,250 blocks.
+  // Live, a step read 17-19 such windows (39M blocks in 3.5 h of steps 10 minutes apart): 530-590 queries in 45 s, about
+  // 80-85 ms each from the Worker, the cost here. The cursors read the 3,852 blocks of a step first.
+  const LIVE = [["payers", 305, 1, 39_000_001, 85_362_903], ["payers", 305, 1, 1, 85_535_652], ["wallets", 1, 2, 1, 85_920_765], ["payers", 306, 1, 1, 86_027_202],
+    ["wallets", 4, 3, 1, 88_007_169], ["wallets", 1, 3, 1, 88_432_907], ["wallets", 1, 3, 1, 88_671_963], ["wallets", 1, 3, 1, 88_906_791], ["wallets", 2, 3, 1, 89_344_935],
+    ["wallets", 1, 3, 1, 89_392_417], ["wallets", 1, 3, 1, 89_472_027], ["wallets", 2, 3, 1, 89_513_867], ["wallets", 2, 3, 1, 89_615_004], ["wallets", 2, 3, 1, 89_835_715],
+    ["wallets", 1, 3, 1, 89_923_466], ["wallets", 3, 3, 1, 90_286_854], ["wallets", 1, 3, 1, 91_590_643], ["wallets", 1, 3, 1, 91_595_625], ["wallets", 2, 3, 1, 92_661_611],
+    ["wallets", 1, 3, 1, 93_154_879], ["wallets", 1, 3, 1, 93_659_289], ["wallets", 1, 3, 1, 93_681_490], ["wallets", 1, 3, 1, 93_782_708], ["wallets", 1, 3, 1, 94_001_582],
+    ["wallets", 2, 3, 1, 94_431_819], ["wallets", 2, 3, 1, 94_540_216], ["wallets", 2, 3, 1, 94_549_732], ["payers", 342, 1, 1, 94_626_759], ["wallets", 1, 4, 1, 95_197_040],
+    ["wallets", 1, 4, 1, 96_065_389]];
+  const HEAD = 96_153_865, STEP = 3_852, COST = 85, BUDGET = 45_000;
+  const side = Array.from({ length: 344 }, (_, i) => lc(A(0x10000 + i))), payers = [1, 2, 3, 4].map((k) => lc(A(0xfa0 + k)));
+  let fresh = side.length; // a wallets backfill's wallets: the newest agent-side wallets, from the end
+  const transferBackfills = LIVE.map(([kind, nf, nt, next, until], i) => ({ kind, next, until,
+    from: kind === "payers" ? side.slice(0, nf) : side.slice((fresh -= nf), fresh + nf),
+    to: kind === "payers" ? [payers[[0, 1, 3, 27].indexOf(i)]] : payers.slice(0, nt) }));
+  const snap = snapOf(side.map((w, i) => agent(i + 1, w)));
+  const state = { v: 2, fromBlock: 10, transfersFrom: 1, agentWallets: Object.fromEntries(side.map((w, i) => [i + 1, w])), walletFailures: {}, walletsAt: NOW,
+    wallets: [...side].sort(), payments: payers.map((p, k) => ({ id: `0x${k}:1`, block: HEAD - 100 + k, at: NOW - DAY, payer: p, payTo: side[0], amount: "2000000" })),
+    paymentsTo: HEAD, paymentBackfills: [], permit2: true, permit2Backfill: null, from: [...side].sort(), payers, transfers: [], transfersTo: HEAD,
+    transferBackfills, repayers: {}, paymentsChunk: 2_000_000 };
+  const real = Date.now;
+  let clock = real(), queries = 0;
+  const node = {
+    async getLogs(f) {
+      clock += COST; queries++;
+      if (f.toBlock - f.fromBlock > 10_000) throw Object.assign(new Error("server response 413 Request Entity Too Large"), { error: { code: -32614, message: "eth_getLogs is limited to a 10,000 range" } });
+      return [];
+    },
+    async getBlock(n) { clock += COST; return { timestamp: NOW - 1000 + n }; },
+  };
+  Date.now = () => clock;
+  let r = { state }, steps = 0, payersClear = null;
+  try {
+    while (r.state.transferBackfills.length && steps < 120) {
+      steps++;
+      r = await updateIncome(node, r.state, opts(snap, HEAD + STEP * steps, { deadline: clock + BUDGET }));
+      if (payersClear == null && !r.pending.payers.length) payersClear = steps;
+      assert.equal(r.complete, true, `step ${steps}: the cursors keep up`);
+    }
+  } finally { Date.now = real; }
+  assert.equal(r.state.transferBackfills.length, 0, `every netting backfill read (left after ${steps} steps: ${r.state.transferBackfills.length}, the first at block ${r.state.transferBackfills[0]?.next})`);
+  // 23,707 windows of 10,000 blocks (the started one's 4,637, the payers' 9,463, the wallets' 9,607), ~523 a step
+  assert.ok(steps <= 50, `in ${steps} steps (${queries} queries, ${Math.round(queries / steps)} a step)`);
+  assert.ok(payersClear <= 30, `every payer read back by step ${payersClear}`);
+});
+
 await check("index: a new index reads Permit2 payments from the start, through the same cursor as the signed ones", async () => {
   const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 40 }], permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
   const r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));

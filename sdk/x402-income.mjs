@@ -260,29 +260,35 @@ export async function scanPayments(provider, { usdg, wallets, fromBlock, toBlock
 /**
  * Every USDG Transfer from any of `from` to any of `to` in [fromBlock, toBlock] (any kind of transfer), for netting:
  * money an agent's side sends to a payer is not income from that payer. Only the amounts matter (no timestamps are
- * read). Same chunking and deadline as scanPayments. Returns { transfers: [{id, block, from, to, amount}], scannedTo }.
+ * read). Same chunking and deadline as scanPayments, except that a window the node refuses as too wide or too slow is
+ * asked again a tenth as wide (down to `minChunk` blocks, where getLogsAdaptive takes over as before), and the windows
+ * after it keep that width: one refusal a scan on a node with a narrower limit, not a cascade of halvings every window.
+ * Returns { transfers: [{id, block, from, to, amount}], scannedTo }.
  */
-export async function scanTransfers(provider, { usdg, from, to, fromBlock, toBlock, chunk = 5_000_000, batch = 400, deadline = Infinity }) {
+export async function scanTransfers(provider, { usdg, from, to, fromBlock, toBlock, chunk = 5_000_000, minChunk = 1_000, batch = 400, deadline = Infinity }) {
   const fromT = uniq(from.map(lc)).filter(isAddr).map(topicOf), toT = uniq(to.map(lc)).filter(isAddr).map(topicOf);
   const transfers = [];
   let scannedTo = fromBlock - 1;
   if (!fromT.length || !toT.length || fromBlock > toBlock) return { transfers, scannedTo: Math.max(scannedTo, toBlock) };
-  for (let a = fromBlock; a <= toBlock; a += chunk) {
+  for (let a = fromBlock; a <= toBlock;) {
     if (past(deadline)) break;
     const b = Math.min(toBlock, a + chunk - 1);
+    const narrower = chunk > minChunk; // a refusal makes the window narrower rather than splitting it
     try {
       const got = [];
       for (const fb of batches(fromT, batch)) {
         for (const tb of batches(toT, batch)) {
-          for (const l of await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.TRANSFER, fb, tb] }, a, b, { deadline })) {
+          for (const l of await getLogsAdaptive(provider, { address: usdg, topics: [TOPICS.TRANSFER, fb, tb] }, a, b, { deadline, ...(narrower ? { minSpan: b - a + 1 } : {}) })) {
             got.push({ id: lc(l.transactionHash) + ":" + Number(l.index), block: Number(l.blockNumber), from: lc(addrOf(l.topics[1])), to: lc(addrOf(l.topics[2])), amount: BigInt(l.data).toString() });
           }
         }
       }
       transfers.push(...got);
       scannedTo = b;
+      a = b + 1;
     } catch (e) {
       if (e instanceof DeadlineError) break;
+      if (narrower && !RATE_LIMITED.test(errText(e)) && RANGE_OR_TIMEOUT.test(errText(e))) { chunk = Math.max(minChunk, Math.floor(chunk / 10)); continue; }
       throw e;
     }
   }
@@ -373,10 +379,12 @@ export const INDEX_DEFAULTS = Object.freeze({
   maxRepayerReads: 50,        // receipts read per run
   paymentsChunk: 2_000_000,   // blocks per payment window at first and at most
   minPaymentsChunk: 10_000,   // a window never gets smaller than this
-  // blocks per netting window (cursor and backfills). A window cut short by the run's end is dropped whole. The official
-  // node answers a query with lists of topics over 100,000 blocks at most ("only 100000 are allowed for this request"),
-  // so a 5M window went out as 80 requests and 79 refusals, 17-36 s, read again from its start whenever the run ended
-  // inside it. 100,000 blocks is one request (0.12-0.15 s there, 2026-10-23), so a run keeps all but its last one.
+  // blocks per netting window (cursor and backfills) at first. A window cut short by the run's end is dropped whole. The
+  // official node answers a query with lists of topics over 100,000 blocks at most ("only 100000 are allowed for this
+  // request"), so a 5M window went out as 80 requests and 79 refusals, 17-36 s, read again from its start whenever the
+  // run ended inside it. 100,000 blocks is one request there (0.12-0.15 s, 2026-10-23). The paid node behind INCOME_RPC
+  // answers 10,000 at most (HTTP 413, -32614 "eth_getLogs is limited to a 10,000 range"): scanTransfers asks a refused
+  // window again a tenth as wide, and goes on at that width.
   transfersChunk: 100_000,
   transfersFrom: 1,           // netting reads the whole chain
   minPayerAtomic: 1_000_000,  // a payer is netted (and counts) once it has paid 1 USDG: dust can't make work
@@ -524,13 +532,28 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
      2026-10-23 they came after the payment backfills, which took every run, so every payer of 1 USDG or more stayed
      pending and the board showed no receipts). What a payment backfill finds is looked at again below, as if a cursor
      had found it: its payer is tracked (its netting read on its own before its income counts, `pending`, in the same
-     run when there is time), and its agent's repaid loans' repayers are read, or the scores wait for them. */
+     run when there is time), and its agent's repaid loans' repayers are read, or the scores wait for them.
+     Backfills of one kind at the same block (every one not started yet is at `transfersFrom`) are read in one scan, over
+     the union of their wallets and payers up to the furthest `until`, and each takes only its own pairs up to its own
+     `until`: the transfers its own scan would find, and it is done (its payer or wallets stop waiting) once its own range
+     is read. They stay at the same block run after run; one added later starts at `transfersFrom` with the next ones.
+     The scan furthest along goes first (then the list's order), so one in progress is finished before one at block 1, as
+     when each backfill was read on its own. Until 2026-10-23 each read the whole chain alone: 29 waited at block 1. */
   const netBackfills = async () => {
+    const scans = new Map();
     for (const bf of state.transferBackfills) {
+      const k = `${bf.kind}:${bf.next}`;
+      if (!scans.has(k)) scans.set(k, []);
+      scans.get(k).push(bf);
+    }
+    for (const group of [...scans.values()].sort((x, y) => y[0].next - x[0].next)) {
       if (past(deadline)) break;
-      const r = await scanTransfers(provider, { usdg, from: bf.from, to: bf.to, fromBlock: bf.next, toBlock: bf.until, chunk: P.transfersChunk, deadline });
-      addUnique(state.transfers, r.transfers);
-      bf.next = r.scannedTo + 1;
+      const r = await scanTransfers(provider, { usdg, from: uniq(group.flatMap((bf) => bf.from)), to: uniq(group.flatMap((bf) => bf.to)), fromBlock: group[0].next, toBlock: Math.max(...group.map((bf) => bf.until)), chunk: P.transfersChunk, deadline });
+      for (const bf of group) {
+        const upTo = Math.min(r.scannedTo, bf.until), from = new Set(bf.from.map(lc)), to = new Set(bf.to.map(lc));
+        addUnique(state.transfers, r.transfers.filter((x) => x.block >= bf.next && x.block <= upTo && from.has(x.from) && to.has(x.to)));
+        bf.next = Math.max(bf.next, upTo + 1);
+      }
     }
     state.transferBackfills = state.transferBackfills.filter((bf) => bf.next <= bf.until);
   };
