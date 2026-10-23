@@ -3,15 +3,16 @@ title: Credit history for ERC-8004 agents
 description: A profile of the ERC-8004 Reputation Registry for loan outcomes that any reader can rebuild from the lender's own logs
 author: Priors contributors (@priors_trade)
 discussions-to: https://ethereum-magicians.org/t/erc-tba-credit-history-for-erc-8004-agents/30022
-status: Draft (pre-submission, 2026-10-07)
+status: Draft (submitted as ethereum/ERCs#2110, 2026-10-23)
 type: Standards Track
 category: ERC
 requires: 8004
 ---
 
-*Working draft, kept in this repository until it is posted for discussion. The reference reader, the format's code,
-the test vectors and their tests are in this repository; Priors' writer and its fork test run in Priors' own
-deployment (see "Reference implementation").*
+*Working draft. Its text in the ERC template, as "Agent Credit History", is submitted as ethereum/ERCs#2110
+(https://github.com/ethereum/ERCs/pull/2110) and discussed on the Ethereum Magicians thread above. The reference reader,
+the format's code, the test vectors and their tests are in this repository; Priors' writer and its fork test run in
+Priors' own deployment (see "Reference implementation").*
 
 ## Abstract
 
