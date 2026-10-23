@@ -77,7 +77,7 @@ The v2 contracts on Robinhood Chain (chain 4663), live since block 71,702,460, a
 | its libraries, which V5 calls by DELEGATECALL (they run in V5's context and hold nothing) | `V5Pos` `0xd2d393Daf7bABE6ac090a97765407256673Bf9Bc`, `V5Steps` `0x3a4B951E0eae25DD327224395ecE0C6fD6345f94`, `V5Book` `0x90992387BbfBcF6aB179B33535d283FEE2d832F4`, `V5Records` `0x23C3660Cd36401F6adE16f51f81F629a6aE6d826`, `V5Exit` `0x0BB0CF27E9a0f5DB38a3F58fc31b1f90D784CbC7`, `V5Auto` `0x22914DF387771bCB167Bfd1777678887D1AB1375`, `V5Sync` `0x2FE6cC16DA24694D48BbDD8C83d4732ca23276F4`, `V5View` `0xE5175D7C9C30E210197D23A45A3e0bbe66cF1846`, `V5Lens` `0x294a483e54aBE64d2037df370974304C0F3B09F7` |
 | `InviteBond` (the bond an automatic invite needs) | [`0x8BE478c754D9124D11e78dB20F5bf4dA45403275`](https://robinhoodchain.blockscout.com/address/0x8BE478c754D9124D11e78dB20F5bf4dA45403275) |
 | `StockVault`, the stock vault (root `#6424`; live since 2026-09-28): the proxy users call | [`0xbEcd07EC689988e16b870C121756C4c2C8cb02B6`](https://robinhoodchain.blockscout.com/address/0xbEcd07EC689988e16b870C121756C4c2C8cb02B6) |
-| its implementation (`src/StockVault.sol`) | [`0xd30396A79D6b5BDB86D09B8c7907aD2820a42c72`](https://robinhoodchain.blockscout.com/address/0xd30396A79D6b5BDB86D09B8c7907aD2820a42c72) (since 2026-10-18) |
+| its implementation (`src/StockVault.sol`) | [`0x9E80C9839d1331C945BB7Bd7DB5cE4a07124d1a6`](https://robinhoodchain.blockscout.com/address/0x9E80C9839d1331C945BB7Bd7DB5cE4a07124d1a6) (since 2026-10-23) |
 
 The stock vault is the one upgradeable contract: what is in scope is the implementation its proxy points to when you
 report (the ERC-1967 implementation slot), which the table will follow after any upgrade.

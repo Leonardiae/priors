@@ -161,32 +161,50 @@ contract StockVaultHolds {
 
     /// @dev Where a new tape of `feed` begins, in the phase of its round `latest`: the first round published after
     ///      TAPE_FROM ago (a phase's rounds are numbered in the order they were published: a binary search), and, when
-    ///      that is the phase's first round, its time. A round the search cannot read counts as recent, so the tape
-    ///      can only begin earlier, never after a round it should hold (the walk forward then records it as a day that
-    ///      holds); an unreadable first round counts as published now.
+    ///      that is the phase's first round, its time. The search first counts a round it cannot read as old: a feed
+    ///      that serves only its latest rounds (PtLinearDiscountFeed, 1,024) cannot read its oldest, and counting them
+    ///      as recent took the search down to round 1, read as a phase begun now, so a new tape held new credit for the
+    ///      whole window, and a default seized every token, with nothing moved (GHSA-3vg6-2f3m-j5qm). If the round
+    ///      before where it stops cannot be read either, that round's time is unknown, and the search runs again below
+    ///      it counting such a round as recent, as before. Either way the tape begins right after a round it read as
+    ///      older than TAPE_FROM, or at round 1, so it can only begin earlier, never after a round it should hold (the
+    ///      walk forward records one it cannot read as a day that holds); an unreadable first round counts as published
+    ///      now.
     function _tapeStart(address feed, uint80 latest) internal view returns (uint256 from, uint48 phaseBegan) {
         uint256 phase = uint256(latest) >> 64 << 64;
         uint256 cut = block.timestamp > TAPE_FROM ? block.timestamp - TAPE_FROM : 0;
-        uint256 lo = 1;
-        uint256 hi = uint64(latest);
-        while (lo < hi) {
-            uint256 mid = (lo + hi) / 2;
-            if (_publishedAt(feed, phase | mid) > cut) hi = mid;
-            else lo = mid + 1;
-        }
+        uint256 lo = _firstAfter(feed, phase, cut, uint64(latest), false);
+        if (lo > 1 && _publishedAt(feed, phase | (lo - 1)) == 0) lo = _firstAfter(feed, phase, cut, lo - 1, true);
         from = phase | lo;
         if (lo == 1) {
             uint256 at = _publishedAt(feed, from);
+            if (at == 0) at = block.timestamp;
             if (at > cut) phaseBegan = uint48(at);
         }
     }
 
-    /// @dev Round `id`'s time; now for a round that cannot be read.
+    /// @dev The first of `feed`'s rounds 1 to `hi` of `phase` published after `cut` (`hi` if none before it is), by
+    ///      binary search; a round that cannot be read counts as published after `cut` if `unreadableIsRecent`.
+    function _firstAfter(address feed, uint256 phase, uint256 cut, uint256 hi, bool unreadableIsRecent)
+        internal
+        view
+        returns (uint256 lo)
+    {
+        lo = 1;
+        while (lo < hi) {
+            uint256 mid = (lo + hi) / 2;
+            uint256 at = _publishedAt(feed, phase | mid);
+            if (at == 0 ? unreadableIsRecent : at > cut) hi = mid;
+            else lo = mid + 1;
+        }
+    }
+
+    /// @dev Round `id`'s time; 0 for a round that cannot be read.
     function _publishedAt(address feed, uint256 id) internal view returns (uint256) {
         try IPriceFeed(feed).getRoundData(uint80(id)) returns (uint80, int256, uint256, uint256 at, uint80) {
-            return at == 0 ? block.timestamp : at;
+            return at;
         } catch {
-            return block.timestamp;
+            return 0;
         }
     }
 
