@@ -2,10 +2,10 @@
 
 *2026-09-26, audited the same day (findings F1-F21 fixed below). Live since 2026-09-27: see "Where to read it".
 In this repo: the scoring engine (`sdk/score-v2.mjs`), its inputs (`sdk/score-v2-inputs.mjs`), the weights
-(`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`), x402 income read from the chain
-(`sdk/x402-income.mjs`) and the tests (`scripts/test-score-v2.mjs`, `scripts/test-x402-income.mjs`,
-`scripts/test-stocks.mjs`). Priors' clusters list is not published (see
-"Clusters").*
+(`sdk/score-weights.v2.json`; 2.0.1 in `sdk/score-weights.v2.0.1.json`, 2.0.2 in `sdk/score-weights.v2.0.2.json`),
+x402 income read from the chain (`sdk/x402-income.mjs`) and the tests (`scripts/test-score-v2.mjs`,
+`scripts/test-x402-income.mjs`, `scripts/test-stocks.mjs`, `scripts/test-score-v2-priors-stake.mjs`). Priors' clusters
+list is not published (see "Clusters").*
 
 ## Why a v2
 
@@ -22,12 +22,12 @@ for real time. An audit (2026-09-26) found what it can't see:
 | layer | what | changes how | used by |
 |---|---|---|---|
 | **v1, on chain** | `ScoreLib`: simple, conservative | a new pool version, behind the timelock (48 h; no delay from 2026-10-11 19:49 UTC) | contracts: treasury rules (a raise needs a score of 100); seat gates count repaid loans, not the score |
-| **v2, open and deterministic** | `scoreV2()`: a pure function of public data, with published weights | a new weights file and version, announced first (below) | people and apps: site, API, MCP; later attested on chain |
+| **v2, open and deterministic** | `scoreV2()`: a pure function of public data, with published weights | a new weights file and version, announced on the dev log (priors.trade/updates) 7 days ahead (below) | people and apps: site, API, MCP; later attested on chain |
 
 v2 moves fast and in the open; v1 stays the hard floor the contracts rely on. When a v2 component has proven itself
 on data, it moves into the next on-chain version.
 
-## The score (v2.0.0 and 2.0.1, the same numbers; max 1000)
+## The score (v2.0.0, 2.0.1 and 2.0.2, the same numbers; max 1000)
 
 | component | max | counts |
 |---|---|---|
@@ -44,9 +44,12 @@ on data, it moves into the next on-chain version.
 **30+ days** when the loan was issued, counted from its enrolment or, if later, from when its current owner took the
 id (registry transfers). The protocol's treasury (and treasury v5, once the snapshot names its root) and seat vaults
 (V3 and the growth seat vault V4, public ids in the snapshot) count from day one. A backer the record doesn't know
-counts as the agent's own, and so, under 2.0.1, does the stock vault's root: the agent's own tokens stand behind that
-loan. v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies
-to backing held now.
+counts as the agent's own, and so, under 2.0.1 and 2.0.2, does the stock vault's root: the agent's own tokens stand
+behind that loan. Under 2.0.2, so do SeatVaultV5's roots (#8762, and the retired #8641; the snapshot's
+`meta.seatVaultV5AgentId`, without which 2.0.2 builds no inputs, and `meta.seatVaultV5RetiredAgentId`): V5 sizes the
+line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so a stake never changes a score.
+v1 loans take their backer from the repayment's `FeeSplit` event, not from today's sponsor. The same rule applies to
+backing held now.
 
 **Rungs** (the record side of the trust ladder): 0 unproven · 1 started (one repayment backed by
 someone else) · 2 proven (3+, over 14+ days, none late) · 3 earned (proven, a record score of 300+ with income left
@@ -166,10 +169,12 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 ## Changing it (future intervention)
 
 - **Versioned.** The weights file carries a version. A change is a new weights file with its own version, a line in
-  the changelog below, and a note on X at least **7 days before** it becomes the default. Old versions stay in the
-  repo, so any past score can be recomputed.
+  the changelog below, and an announcement on the dev log (priors.trade/updates) at least **7 days before** it becomes
+  the default. Old versions stay in the repo, so any past score can be recomputed.
 - **Pinned outputs.** Every published score names its version; apps can pin a version. The engine computes with
-  the version it is given (`weightsFor` in `sdk/score-v2.mjs`; 2.0.0 when none is given).
+  the version it is given (`weightsFor` in `sdk/score-v2.mjs`: 2.0.0, 2.0.1 or 2.0.2; 2.0.0 when none is given).
+  Priors' published scores use 2.0.1, and 2.0.2 from 2026-11-01 00:00 UTC: a score's version follows from its own
+  timestamp.
 - **No hidden levers.** No per-agent overrides. Protecting the pool from a bad actor uses the existing on-chain tools
   (freeze, pause), which are public events.
 - **The clusters list changes only by commit** (in Priors' own repository; it is not published).
@@ -187,6 +192,18 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
 
 ## Changelog
 
+- **2.0.2** (published 2026-10-23 on the dev log, priors.trade/updates; Priors' scores use it from 2026-11-01 00:00
+  UTC): 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (`sdk/score-weights.v2.0.2.json`,
+  `backers.ownCollateralRoots` "seatVaultV5": `meta.seatVaultV5AgentId`, and `meta.seatVaultV5RetiredAgentId` when
+  named). V5 sizes a line by the owner's own $PRIORS behind the agent and burns 75% of it on a default, so its loans are
+  no risk someone else took, and a stake never changes a score. No weight changes. Under 2.0.1, V5's root (#8762,
+  enrolled 2026-10-11) passes the 30-day backer rule on 2026-11-10 15:06 UTC; from then a bigger stake would raise the
+  score (a $25 line's three loans score 111, a $50 line's 199; 24 for both under 2.0.2:
+  `scripts/test-score-v2-priors-stake.mjs`). Inputs under 2.0.2 need the snapshot to name V5's root: without
+  `meta.seatVaultV5AgentId` none are built (`ownCollateralRoots` in `sdk/score-v2-inputs.mjs` throws), so no score is
+  published rather than one a stake moved. No score moves on the day: until V5's roots are 30 days old (the retired
+  #8641 on 2026-11-08, #8762 on 2026-11-10), 2.0.1 and 2.0.2 give every agent the same score, so on 2026-11-01 only
+  the published `version` changes. 2.0.0 stays the engine's default.
 - **inputs, 2026-10-14** (all versions): treasury v5's root (`meta.treasuryV5AgentId`, where an agent moves for its
   $25 raise) backs from day one, as the treasury does: a moved line's loans stay someone else's risk.
 - **inputs, 2026-10-04** (all versions): a loan repaid through AutoRepay (Autopay) is read from AutoRepay's own
@@ -209,9 +226,9 @@ When a v2 result is not available, each of them answers without it (`v2: null`) 
   own money, since its own tokens stand behind it, not as someone else's risk (`sdk/score-weights.v2.0.1.json`,
   `backers.ownCollateralRoots`; found by the stocks readiness review of 2026-09-28). No weight changes. A
   self-collateralised agent at day 30 scores 29 under it, 519 under 2.0.0. 2.0.0 stays the engine's default (the
-  version `weightsFor` returns when none is named) until 2.0.1's note on X, 7 days ahead. While the stock vault is
-  live, Priors publishes v2 scores under 2.0.1 only: 2.0.0 scores (or any score while the vault's agent is unknown)
-  are withheld rather than published inflated.
+  version `weightsFor` returns when none is named) until 2.0.1 is announced on the dev log (priors.trade/updates), 7
+  days ahead. While the stock vault is live, Priors publishes v2 scores under 2.0.1 only: 2.0.0 scores (or any score
+  while the vault's agent is unknown) are withheld rather than published inflated.
 - **2.0.0** (2026-09-26): first version, never published before the audit fixes were folded in: seasoned loans
   weighted by size; backers need 30 days on Priors (or are the protocol's treasury or seat vault) and unknown ones
   fail closed; v1 backers from `FeeSplit`; rungs 2 and 3 need 14 and 30 days; dust payers add no breadth; income

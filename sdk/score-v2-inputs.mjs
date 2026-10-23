@@ -28,7 +28,10 @@
 //
 // Own collateral (weights 2.0.1, `backers.ownCollateralRoots`): the stock vault's root (snapshot meta.stockVaultAgentId)
 // counts as the borrower's own money too. The vault backs a line with the borrower's own stock tokens, which it seizes
-// on a default: loans on them are no risk someone else took.
+// on a default: loans on them are no risk someone else took. Weights 2.0.2 add SeatVaultV5's roots ("seatVaultV5":
+// meta.seatVaultV5AgentId, and meta.seatVaultV5RetiredAgentId when named): V5 sizes a line by the owner's own $PRIORS
+// behind the agent and burns 75% of it on a default, so a bigger stake is no more risk someone else took. Fails closed:
+// with "seatVaultV5" and no meta.seatVaultV5AgentId, no inputs are built.
 import { scoreV2, payerWeight, DEFAULT_WEIGHTS } from "./score-v2.mjs";
 
 const lc = (a) => String(a || "").toLowerCase();
@@ -52,6 +55,20 @@ function unionFind() {
   };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra > rb ? ra : rb, ra > rb ? rb : ra); };
   return { find, union, keys: () => [...parent.keys()] };
+}
+
+/** The roots whose loans are the borrower's own money under `weights` (`backers.ownCollateralRoots`): "stockVault",
+ *  the stock vault's root (meta.stockVaultAgentId, when named); "seatVaultV5" (2.0.2), V5's root (meta.seatVaultV5AgentId,
+ *  required: throws without it) and the retired V5 root (meta.seatVaultV5RetiredAgentId, when named). */
+export function ownCollateralRoots(snapshot, weights = DEFAULT_WEIGHTS) {
+  const m = snapshot.meta || {}, keys = weights.backers.ownCollateralRoots || [], ids = [];
+  if (keys.includes("stockVault") && Number(m.stockVaultAgentId) > 0) ids.push(Number(m.stockVaultAgentId));
+  if (keys.includes("seatVaultV5")) {
+    if (!(Number(m.seatVaultV5AgentId) > 0)) throw new Error(`score-v2 inputs: weights ${weights.version} count SeatVaultV5's root as the owner's own collateral: the snapshot must name it (meta.seatVaultV5AgentId)`);
+    ids.push(Number(m.seatVaultV5AgentId));
+    if (Number(m.seatVaultV5RetiredAgentId) > 0) ids.push(Number(m.seatVaultV5RetiredAgentId));
+  }
+  return new Set(ids);
 }
 
 /**
@@ -144,7 +161,7 @@ export function buildInputs(snapshot, { links, income = [], agentWallets = {}, t
   // and seat vaults (V3, and the growth vault V4) count as backers from day one (public ids in the snapshot's meta)
   const protocolBackers = new Set([snapshot.meta?.treasuryAgentId, snapshot.meta?.treasuryV5AgentId, snapshot.meta?.seatVaultAgentId, snapshot.meta?.seatVaultV4AgentId, snapshot.meta?.archive?.treasuryAgentId].filter((x) => x != null).map(Number));
   // roots that lend against the borrower's own collateral: never someone else's risk
-  const ownRoots = new Set((weights.backers.ownCollateralRoots || []).includes("stockVault") && Number(snapshot.meta?.stockVaultAgentId) > 0 ? [Number(snapshot.meta.stockVaultAgentId)] : []);
+  const ownRoots = ownCollateralRoots(snapshot, weights);
   // v1 loans predate the loan's own sponsorId: their backer is in the FeeSplit event of the repayment
   const v1Backer = new Map();
   for (const e of snapshot.events || []) if (e.kind === "FeeSplit" && e.era === "v1") v1Backer.set(Number(e.loanId), Number(e.sponsor));

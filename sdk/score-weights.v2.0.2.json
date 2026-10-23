@@ -1,0 +1,95 @@
+{
+  "version": "2.0.2",
+  "published": "2026-10-23",
+  "notes": "Priors Score v2.0.2 weights: 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (backers.ownCollateralRoots). Announced on the dev log (priors.trade/updates) on 2026-10-23, 7 days ahead; Priors' published scores use it from 2026-11-01 00:00 UTC (docs/SCORE-v2.md). Changing any number here is a new version.",
+  "max": 1000,
+  "backers": {
+    "minAgeDays": 30,
+    "why": "A backer counts once its agent has been on Priors for 30+ days when the loan is issued (the pool's treasury and seat vault from day one), so a fresh second wallet can't vouch its way to a record.",
+    "ownCollateralRoots": [
+      "stockVault",
+      "seatVaultV5"
+    ],
+    "ownCollateralWhy": "A loan the stock vault backs is the borrower's own money: its own stock tokens stand behind it and are seized on a default, so it builds no record of risk someone else took (the vault's root, snapshot meta.stockVaultAgentId, counts as the borrower's own backer). So is a loan on a SeatVaultV5 line: the line is sized by the owner's own $PRIORS behind the agent, 75% of which burns on a default, so a bigger stake must never read as more risk someone else took (V5's roots, snapshot meta.seatVaultV5AgentId and meta.seatVaultV5RetiredAgentId, count as the borrower's own backers; without the first, no inputs are built)."
+  },
+  "components": {
+    "riskTime": {
+      "max": 300,
+      "usdgDaysPerPoint": 10,
+      "why": "USDG someone else put at risk for this agent, times the days it was held (up to the loan's term), on loans repaid on time. Repaid from x402 income: up to 25% more.",
+      "incomeRepaidBonus": 0.25
+    },
+    "seasoned": {
+      "max": 200,
+      "pointsEach": 20,
+      "minHoldDays": 7,
+      "why": "Loans held a week or more and repaid on time, backed by someone else. A loan under 50 USDG counts in proportion.",
+      "fullSizeUsdg": 50
+    },
+    "backing": {
+      "max": 150,
+      "usdgPerPoint": 5,
+      "why": "Money others have at risk behind this agent right now."
+    },
+    "age": {
+      "max": 100,
+      "pointsPerDay": 1,
+      "why": "Days since its first loan on Priors (v1 included). Restarts when the agent changes hands."
+    },
+    "recourse": {
+      "max": 100,
+      "pointsEach": 50,
+      "why": "Debts of agents it vouched for that it paid back itself."
+    },
+    "income": {
+      "max": 150,
+      "windowDays": 30,
+      "usdgPerPoint": 1,
+      "perPayerCapUsdg": 20,
+      "breadthPointsPerPayer": 5,
+      "breadthMax": 50,
+      "unknownPayerWeight": 0.5,
+      "scoredPayerFloor": 0.5,
+      "why": "x402 payments to its wallets in the last 30 days, from payers that aren't its own and paid at least 1 USDG. Capped per payer and weighted by the payer's record; money sent back doesn't count.",
+      "minPayerUsdg": 1
+    }
+  },
+  "penalties": {
+    "lateRepayment": 10,
+    "childDefault": 75
+  },
+  "rungs": [
+    {
+      "rung": 0,
+      "name": "unproven",
+      "rule": "no repayment backed by someone else"
+    },
+    {
+      "rung": 1,
+      "name": "started",
+      "rule": "at least one repayment backed by someone else",
+      "minRepaid": 1
+    },
+    {
+      "rung": 2,
+      "name": "proven",
+      "rule": "3+ repayments backed by someone else, over 14+ days, none late",
+      "minRepaid": 3,
+      "minSpanDays": 14
+    },
+    {
+      "rung": 3,
+      "name": "earned",
+      "rule": "proven, a record score of 300+ (income not counted), and 30+ days since the first backed loan",
+      "minScore": 300,
+      "minDays": 30
+    },
+    {
+      "rung": 4,
+      "name": "income-backed",
+      "rule": "earned, income points 50+, from 3+ distinct payers",
+      "minIncomePoints": 50,
+      "minPayers": 3
+    }
+  ]
+}

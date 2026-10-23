@@ -38,10 +38,10 @@
     "priors": "node bin/priors.mjs",
     "check-public": "bash scripts/check-public.sh",
     "selfcheck": "node scripts/selfcheck.mjs",
-    "test": "node scripts/selfcheck.mjs && node scripts/test-rpc-failover.mjs && node scripts/test-sdk-invite.mjs && node scripts/test-sdk-v2.mjs && node scripts/test-sdk-v2-borrow-lost.mjs && node scripts/test-v5-line.mjs && node scripts/test-score-v2.mjs && node scripts/test-x402-income.mjs && node scripts/test-x402-gate.mjs && node scripts/test-x402-gate-chain.mjs && node scripts/test-x402-purchase-key.mjs && node scripts/test-stocks.mjs && node scripts/test-credit-profile.mjs && node scripts/test-credit-reader.mjs && node scripts/test-cli-key-guard.mjs && node scripts/test-cli-wallet.mjs && node scripts/test-float-pending.mjs && node scripts/test-mcp-call-budget.mjs && node scripts/test-x402-base.mjs && node scripts/test-verify-attestation.mjs",
+    "test": "node scripts/selfcheck.mjs && node scripts/test-rpc-failover.mjs && node scripts/test-sdk-invite.mjs && node scripts/test-sdk-v2.mjs && node scripts/test-sdk-v2-borrow-lost.mjs && node scripts/test-v5-line.mjs && node scripts/test-score-v2.mjs && node scripts/test-score-v2-priors-stake.mjs && node scripts/test-x402-income.mjs && node scripts/test-x402-gate.mjs && node scripts/test-x402-gate-chain.mjs && node scripts/test-x402-purchase-key.mjs && node scripts/test-stocks.mjs && node scripts/test-credit-profile.mjs && node scripts/test-credit-reader.mjs && node scripts/test-cli-key-guard.mjs && node scripts/test-cli-wallet.mjs && node scripts/test-float-pending.mjs && node scripts/test-mcp-call-budget.mjs && node scripts/test-x402-base.mjs && node scripts/test-verify-attestation.mjs",
     "priors-v2": "node bin/priors-v2.mjs",
     "test:v2": "node scripts/test-sdk-v2.mjs && node scripts/test-sdk-v2-borrow-lost.mjs && node scripts/test-v5-line.mjs",
-    "test:score-v2": "node scripts/test-score-v2.mjs && node scripts/test-x402-income.mjs"
+    "test:score-v2": "node scripts/test-score-v2.mjs && node scripts/test-score-v2-priors-stake.mjs && node scripts/test-x402-income.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.4",

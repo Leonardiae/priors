@@ -18,6 +18,9 @@
 //     income: [{ payer, amount, at, payerScore? }] }   // income already filtered to payers outside the cluster
 import WEIGHTS from "./score-weights.v2.json" with { type: "json" };
 import WEIGHTS_2_0_1 from "./score-weights.v2.0.1.json" with { type: "json" };
+// 2.0.2: 2.0.1 plus SeatVaultV5's roots as the owner's own collateral (a line sized by the owner's own $PRIORS). Its
+// inputs need the snapshot to name V5's root: sdk/score-v2-inputs.mjs refuses to build them without it.
+import WEIGHTS_2_0_2 from "./score-weights.v2.0.2.json" with { type: "json" };
 
 const DAY = 86400;
 const USDG = 1e6;
@@ -27,7 +30,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 /** The default weights (2.0.0). A newer version becomes the default only once announced (docs/SCORE-v2.md). */
 export const DEFAULT_WEIGHTS = WEIGHTS;
 /** Every published weights version, so a past score can be recomputed and a new one run before it is the default. */
-export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1 });
+export const WEIGHTS_BY_VERSION = Object.freeze({ [WEIGHTS.version]: WEIGHTS, [WEIGHTS_2_0_1.version]: WEIGHTS_2_0_1, [WEIGHTS_2_0_2.version]: WEIGHTS_2_0_2 });
 /** The weights of `version` (the default when empty); an unknown version throws. */
 export function weightsFor(version) {
   if (version == null || String(version).trim() === "") return DEFAULT_WEIGHTS;
