@@ -429,7 +429,7 @@ Credits, by row: the first valid report, then the later reports of the same root
 
 Not findings: the facilitator's free tier was said to be unlimited and to halt every merchant (GHSA-gg53; GHSA-8r9x, a
 later report of the same ruling, said it was unbounded through merchants still under review paying themselves between
-two of their own wallets); its global budget (300 free settles a day for the self-registered merchants together,
+two of their own wallets); its global budget (100 free settles a day for the self-registered merchants together since 2026-10-23, 300 before,
 however many there are, published on `/health`) and the per-IP and daily registration limits were live, and the
 approved merchants sit outside that budget. The v1-only reports
 (GHSA-qq69, GHSA-f8mw, GHSA-576h, GHSA-q9hg) were checked against v2, which none of them reaches; thanks to llen
