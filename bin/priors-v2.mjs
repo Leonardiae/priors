@@ -19,7 +19,7 @@
 // ERC-8004 registry (getAgentWallet on the addresses file's registry, a read only): x402 income counts toward Score v2
 // only when paid to it (docs/SCORE-v2.md). The live registry declares register()'s caller, so `join` declares this
 // key, and a transfer clears it. Its wallet line says whether it is this key, another address, or none; with none, it
-// names the fix: `priors-mcp link-wallet --agent <id>` (@priors/mcp 0.10.1) signs the registry's AgentWalletSet with
+// names the fix: `priors-mcp link-wallet --agent <id>` (@priors/mcp 0.10.2) signs the registry's AgentWalletSet with
 // this key, and this key, the owner, sends the setAgentWallet call it prints. A read that fails adds nothing: the wallet
 // line is then as before, and the exit code is unchanged.
 //
@@ -236,7 +236,7 @@ function walletLines(s, declared) {
   if (declared !== ethers.ZeroAddress) return [`  wallet    ${at} (not the declared wallet, which is ${declared}: x402 income counts toward Score v2 only when paid to that address)`];
   return [
     `  wallet    ${at} (no wallet declared, a transfer clears it: x402 income does not count toward Score v2 until one is)`,
-    `            to declare this key: \`npx -y @priors/mcp@0.10.1 link-wallet --agent ${s.agentId}\` (priors-mcp link-wallet) signs with PRIORS_KEY; send the setAgentWallet call it prints from this key, the owner, within 4 minutes`,
+    `            to declare this key: \`npx -y @priors/mcp@0.10.2 link-wallet --agent ${s.agentId}\` (priors-mcp link-wallet) signs with PRIORS_KEY; send the setAgentWallet call it prints from this key, the owner, within 4 minutes`,
   ];
 }
 

@@ -34,6 +34,26 @@ const LOAN_ACTIVE = 1n;
 export const DEFAULT_MAX_PRICE = 100_000n;
 /** Default longest an authorization stays cashable, seconds, whatever maxTimeoutSeconds the merchant asks. */
 export const DEFAULT_MAX_VALIDITY_SECONDS = 600;
+/**
+ * GHSA-9pw7: whether `me` may move its own money for agent `id` — borrow into it, or repay its loans. The pool's
+ * `setDelegate` lets an owner name any address its delegate with no word from that address, so `isController` is no
+ * proof the signer acts for that owner. `me` must be the agent's current owner or its declared ERC-8004 wallet (set
+ * only by that wallet's own AgentWalletSet signature naming this owner, cleared by a transfer). Borrowing and repaying
+ * take the same rule, so no key borrows here and is then refused a repayment. `did`: "borrowed" or "repaid".
+ */
+async function needOwnerOrAgentWallet(poolC, signer, id, me, did, { ownerOf, agentWalletOf } = {}) {
+  const mine = String(me).toLowerCase();
+  const reg = ownerOf && agentWalletOf ? null : new ethers.Contract(await poolC.registry(), REGISTRY_OWNER_ABI, signer);
+  const holder = String(ownerOf ? await ownerOf(id) : await reg.ownerOf(id));
+  if (holder.toLowerCase() === mine) return holder.toLowerCase();
+  const declared = String(agentWalletOf ? await agentWalletOf(id) : await reg.getAgentWallet(id));
+  if (declared.toLowerCase() === mine) return holder.toLowerCase();
+  throw new FloatError("NOT_AGENTS_WALLET",
+    `${me} is neither agent #${id}'s owner (${holder}) nor its declared ERC-8004 wallet: a pool delegate the owner `
+    + `named is not proof it acts for that owner, so nothing was ${did}. Declare this key as the agent's wallet (the `
+    + `registry's setAgentWallet, signed by this key), or use the owner's key.`);
+}
+
 /** Default loan term when pay() has to borrow: float is pay now, get paid within the week (x402 audit F3). */
 export const DEFAULT_TERM_SECONDS = 7 * 86400;
 
@@ -55,7 +75,7 @@ export const SEAT_VAULT_V5_ABI = [
 ];
 /** V5's delegate wait: a key V5 recorded raises the line this long after. */
 export const V5_DELEGATE_WAIT_S = 86_400;
-const REGISTRY_OWNER_ABI = ["function ownerOf(uint256) view returns (address)"];
+const REGISTRY_OWNER_ABI = ["function ownerOf(uint256) view returns (address)", "function getAgentWallet(uint256 agentId) view returns (address)"];
 const utc = (s) => new Date(Number(s) * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 /** "Name(args)" for a revert that decodes against `iface`, else the provider's short message. */
 function revertText(err, iface) {
@@ -224,6 +244,8 @@ async function payOne(url, { signer, pool, agentId, maxBorrow = 0n, maxPrice = D
     if (term > p.maxTerm) throw new FloatError("TERM_OUT_OF_RANGE", `pay: term ${term} is above the pool's maxTerm ${p.maxTerm}`);
     const [fee] = await poolC.quoteFee(agentId, amount, term);
     if (maxFee !== undefined && fee > BigInt(maxFee)) throw new FloatError("FEE_TOO_HIGH", `pay: loan fee ${fee} is above maxFee ${maxFee}`);
+    // the repayment rule, before anything is sent (GHSA-9pw7): no borrow this client would then refuse to repay
+    await needOwnerOrAgentWallet(poolC, signer, agentId, me, "borrowed");
     // A SeatVaultV5 line: its refresh (or the key's noteDelegate) first, as @priors/x402's borrowGap does.
     await v5BeforeBorrow({ signer, pool: poolC, v5, v5Root, agentId, amount });
     // to = the agent itself: EIP-3009 needs the payer to hold the funds, so the draw lands in the agent's wallet and
@@ -333,17 +355,20 @@ export async function resend(url, paymentHeader, { init = {}, fetchImpl = fetch,
  * with who opened it (GHSA-mmp8). `ownerOf(agentId)` is for tests; by default the pool's registry is asked.
  * @returns {Promise<{repaid: bigint[], open: bigint[], others: Array<{loanId: bigint, openedBy: string}>}>}
  */
-export async function settleLoans({ signer, pool, agentId, ownerOf }) {
+export async function settleLoans({ signer, pool, agentId, ownerOf, agentWalletOf }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
   // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans.
   if (!(await poolC.isController(agentId, me))) throw new FloatError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
+  // ...and control alone is not proof: the pool lets the owner name any address its delegate, with no word from it, so
+  // a signer that is not the owner must be the agent's declared ERC-8004 wallet, which only that wallet's own signature
+  // naming this owner sets and a transfer clears (GHSA-9pw7; AutoRepayV2's rule)
+  const holder = await needOwnerOrAgentWallet(poolC, signer, agentId, me, "repaid", { ownerOf, agentWalletOf });
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20, signer);
   const ids = await poolC.loansOf(agentId);
   const loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
   loans.sort((a, b) => (a.l.dueAt < b.l.dueAt ? -1 : a.l.dueAt > b.l.dueAt ? 1 : 0));
   const repaid = [], open = [], others = [];
-  const holder = loans.length ? String(ownerOf ? await ownerOf(agentId) : await new ethers.Contract(await poolC.registry(), REGISTRY_OWNER_ABI, signer).ownerOf(agentId)).toLowerCase() : "";
   let balance = await usdg.balanceOf(me);
   const target = await poolC.getAddress();
   for (const { id, l } of loans) {

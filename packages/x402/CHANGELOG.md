@@ -1,5 +1,24 @@
 # @priors/x402 changelog
 
+## 0.8.1 (2026-10-23)
+
+- **Borrowing and repaying both need the agent's owner or its declared ERC-8004 wallet.** CreditPoolV2 lets an owner
+  name any address its pool delegate without that address's consent, so `isController` was no proof the signer acts
+  for the agent's owner: a buyer of an agent the signer once held (or was the key of) could name it delegate, borrow,
+  and have a stale `agentId` repay the buyer's loans from the signer's USDG and savings. A signer that is not the
+  owner must now be the agent's declared wallet (set only by that wallet's own `AgentWalletSet` signature naming the
+  owner, cleared by a transfer: AutoRepay v2's rule); otherwise `NOT_AGENTS_WALLET`.
+  - `repayLoan` and `settleLoans` refuse before any top-up, approval or repayment.
+  - `borrowGap` (`pay()`'s borrow-the-gap) and `borrowLine` refuse before the pool is read, a fee quoted, a
+    SeatVaultV5 line refreshed or anything sent. **The two halves are deliberately symmetric:** a key that may not
+    repay here may not borrow here either, so no caller can draw a loan this package would then refuse to settle.
+  - `settleLoans` and `borrowGap` take an optional `agentWalletOf(agentId)` beside `ownerOf`, for a caller that
+    already holds the registry (the MCP server passes both).
+- **Breaking for a delegate-only key.** A key the owner named with `setDelegate` but never declared as the agent's
+  wallet now borrows and repays nothing through this package. Its owner declares it once — the key signs
+  `AgentWalletSet` (`priors-mcp link-wallet` prints the signature) and the owner sends the registry's
+  `setAgentWallet` — or the owner's own key acts. Every error says exactly that.
+
 ## 0.8.0 (2026-10-15)
 
 - **`payViaGateway`: buy from a seller in Vantis' Keyring catalog with one USDG payment on Robinhood Chain.** Off

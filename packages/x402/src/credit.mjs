@@ -51,7 +51,7 @@ export const ERC20_ABI = [
   "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
   "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
 ];
-const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)"];
+const REGISTRY_ABI = ["function ownerOf(uint256) view returns (address)", "function getAgentWallet(uint256 agentId) view returns (address)"];
 /** SeatVaultV5 (a root that backs lines with the owner's $PRIORS), the calls a borrow on its line needs: V5 vouches
  *  nothing at the open and raises the pool's vouch only on `refresh`, by the owner or by the pool delegate V5 recorded
  *  (`noteDelegate`, anyone may send it) at least 24 h before. */
@@ -135,6 +135,35 @@ async function sendBorrow(poolC, args, amount, prefix) {
 const utc = (s) => new Date(Number(s) * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 
 /**
+ * GHSA-9pw7: whether the signer `me` may move its own money for agent `agentId` — borrow into it, or repay its loans.
+ * `CreditPoolV2.setDelegate` lets an owner name any address its delegate with no word from that address, so
+ * `isController` does not show the signer agreed to act for that owner: a buyer of an agent the signer once held could
+ * otherwise borrow and have the signer repay. The signer must be the agent's current owner (`holder`, lowercase), or
+ * its declared ERC-8004 wallet, which only that wallet's own `AgentWalletSet` signature naming this owner sets and a
+ * transfer clears (AutoRepay v2's rule, and the rule `bin/priors-v2.mjs` already applied to the CLI).
+ * Borrowing and repaying take the same rule, so no key can borrow through a client that then refuses to repay.
+ * `did` is what did not happen ("borrowed", "repaid"). Throws NOT_AGENTS_WALLET otherwise.
+ */
+export async function needOwnerOrAgentWallet(agentId, holder, me, agentWallet, did = "repaid") {
+  const mine = String(me).toLowerCase();
+  if (String(holder).toLowerCase() === mine) return;
+  if (String(await agentWallet()).toLowerCase() === mine) return;
+  throw new PayError("NOT_AGENTS_WALLET",
+    `${me} is neither agent #${agentId}'s owner (${holder}) nor its declared ERC-8004 wallet: a pool delegate the `
+    + `owner named is not proof it acts for that owner, so nothing was ${did}. Declare this key as the agent's wallet `
+    + `(the registry's setAgentWallet, signed by this key: \`priors-mcp link-wallet\`), or use the owner's key.`);
+}
+
+/** The agent's owner and declared wallet, from injectors when given, else the pool's own registry. */
+async function agentParties(poolC, signer, id, ownerOf, agentWalletOf) {
+  const reg = ownerOf && agentWalletOf ? null : new ethers.Contract(await poolC.registry(), REGISTRY_ABI, signer);
+  return {
+    holder: String(ownerOf ? await ownerOf(id) : await reg.ownerOf(id)),
+    agentWallet: () => (agentWalletOf ? agentWalletOf(id) : reg.getAgentWallet(id)),
+  };
+}
+
+/**
  * Before a borrow on a SeatVaultV5 line (the agent's pool sponsor is V5's root `v5Root`): raise the pool's vouch to
  * the line V5 allows now with `refresh(id)`, which only the agent's owner, or the pool delegate V5 recorded at least
  * 24 h ago, may do (L-05). A delegate key V5 has not recorded yet is recorded now (`noteDelegate`); while its 24 h run,
@@ -185,11 +214,14 @@ export async function v5BeforeBorrow({ signer, pool, v5, v5Root, agentId, amount
  *   termSeconds?: bigint|number, maxFee?: bigint, me?: string }} o
  * @returns {Promise<{ borrowed: bigint, loanId: bigint|null, dueAt: bigint|null, fee: bigint, term: bigint }>}
  */
-export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root, ownerOf }) {
+export async function borrowGap({ signer, pool, agentId, price, balance, maxBorrow, termSeconds, maxFee, me, v5, v5Root, ownerOf, agentWalletOf }) {
   const cap = BigInt(maxBorrow ?? 0n);
   if (price > cap) throw new PayError("PRICE_ABOVE_MAX_BORROW", `pay: price ${price} is above maxBorrow ${cap}; not borrowing`, { price, maxBorrow: cap });
   const poolC = pool ? poolContract(pool, signer) : null;
   if (!poolC || agentId === undefined || agentId === null) throw new PayError("NO_POOL", "pay: short of USDG and no pool/agentId to borrow from");
+  // the same rule as repaying (GHSA-9pw7): a delegate-only key must not borrow a loan it could not then repay here
+  const parties = await agentParties(poolC, signer, agentId, ownerOf, agentWalletOf);
+  await needOwnerOrAgentWallet(agentId, parties.holder, me || (await signer.getAddress()), parties.agentWallet, "borrowed");
   const p = await poolC.getParams();
   const shortfall = price - balance;
   const amount = shortfall > p.minLoan ? shortfall : p.minLoan;
@@ -223,18 +255,22 @@ export async function borrowGap({ signer, pool, agentId, price, balance, maxBorr
  * another address) stays in `open` and is listed in `others` with who opened it (GHSA-mmp8).
  * @returns {Promise<{ repaid: bigint[], open: bigint[], others: Array<{ loanId: bigint, openedBy: string }>, waiting?: Array<{ loanId: bigint, opens: number }>, savings?: object }>}
  */
-export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000), ownerOf }) {
+export async function settleLoans({ signer, pool, agentId, topUp, onlyInWindow = false, now = () => Math.floor(Date.now() / 1000), ownerOf, agentWalletOf }) {
   const poolC = poolContract(pool, signer);
   const me = await signer.getAddress();
   // Only the signer's own agent: a wrong or stale agentId would otherwise pay a stranger's loans (P-7).
   if (!(await poolC.isController(agentId, me))) throw new PayError("NOT_CONTROLLER", `agent #${agentId} is not controlled by ${me} (neither its owner nor its pool delegate)`);
+  // ...and control alone is not proof: the pool lets the owner name any address its delegate, with no word from it, so
+  // a signer that is not the owner must be the agent's declared ERC-8004 wallet (GHSA-9pw7)
+  const parties = await agentParties(poolC, signer, agentId, ownerOf, agentWalletOf);
+  const holder = parties.holder.toLowerCase();
+  await needOwnerOrAgentWallet(agentId, holder, me, parties.agentWallet, "repaid");
   const usdg = new ethers.Contract(await poolC.usdg(), ERC20_ABI, signer);
   const ids = await poolC.loansOf(agentId);
   let loans = (await Promise.all(ids.map(async (id) => ({ id, l: await poolC.getLoan(id) })))).filter((x) => x.l.status === LOAN_ACTIVE);
   loans.sort((a, b) => (a.l.dueAt < b.l.dueAt ? -1 : a.l.dueAt > b.l.dueAt ? 1 : 0));
   const repaid = [], open = [], waiting = [], others = [];
   if (loans.length) {
-    const holder = String(ownerOf ? await ownerOf(agentId) : await new ethers.Contract(await poolC.registry(), REGISTRY_ABI, signer).ownerOf(agentId)).toLowerCase();
     loans = loans.filter(({ id, l }) => { if (String(l.owner).toLowerCase() === holder) return true; open.push(id); others.push({ loanId: id, openedBy: l.owner }); return false; });
   }
   if (onlyInWindow) {
@@ -393,9 +429,13 @@ export async function quoteBorrow(c, agentId, amount, termSeconds) {
 /** Borrow `amount` for `termSeconds` into the signer's wallet; fee capped at the quote. On a SeatVaultV5 line, its
  *  refresh first (v5BeforeBorrow). Simulates first. */
 export async function borrowLine(c, signer, agentId, amount, termSeconds) {
+  const pool0 = c.pool.connect(signer);
+  const me0 = await signer.getAddress();
+  // GHSA-9pw7: borrowing takes the repayment rule, so a key cannot draw a loan this client would refuse to repay
+  await needOwnerOrAgentWallet(agentId, String(await c.registry.ownerOf(BigInt(agentId))), me0, () => c.registry.getAgentWallet(BigInt(agentId)), "borrowed");
   const q = await quoteBorrow(c, agentId, amount, termSeconds);
-  const pool = c.pool.connect(signer);
-  const me = await signer.getAddress();
+  const pool = pool0;
+  const me = me0;
   const v5 = await v5BeforeBorrow({ signer, pool, v5: c.v5 || null, v5Root: c.addresses?.seatVaultV5AgentId ?? null, agentId, amount });
   const args = [BigInt(agentId), amount, q.term, me, q.fee];
   try { await pool.borrow.staticCall(...args); } catch (e) { throw new PayError("BORROW_WOULD_REVERT", `borrow would revert: ${explainRevert(e, pool.interface)}`); }
@@ -417,6 +457,7 @@ export async function repayLoan(c, signer, loanId) {
   // ...and only a loan its owner now took: one opened while someone else held the agent is theirs (GHSA-mmp8)
   const holder = String(await c.registry.ownerOf(l.agentId));
   if (String(l.owner).toLowerCase() !== holder.toLowerCase()) throw new PayError("NOT_OWNERS_LOAN", `loan #${loanId} was opened by ${l.owner}, which held agent #${l.agentId} then; its owner now (${holder}) did not take it: not repaid`);
+  await needOwnerOrAgentWallet(l.agentId, holder, me, () => c.registry.getAgentWallet(l.agentId), "repaid");
   const bal = await usdg.balanceOf(me);
   if (bal < due) throw new PayError("INSUFFICIENT_USDG", `repaying loan #${loanId} needs ${due} atomic USDG but the wallet holds ${bal}`, { due, balance: bal });
   const target = await pool.getAddress();

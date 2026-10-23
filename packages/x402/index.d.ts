@@ -282,7 +282,7 @@ export declare class PayError extends Error {
   asset?: string;
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
-export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number; ownerOf?: (agentId: bigint | number | string) => Promise<string> }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
+export declare function settleLoans(o: { signer: any; pool: string | any; agentId: bigint | number | string; topUp?: (need: bigint) => Promise<SavingsTopUp>; onlyInWindow?: boolean; now?: () => number; ownerOf?: (agentId: bigint | number | string) => Promise<string>; agentWalletOf?: (agentId: bigint | number | string) => Promise<string> }): Promise<{ repaid: bigint[]; open: bigint[]; others: Array<{ loanId: bigint; openedBy: string }>; waiting?: Array<{ loanId: bigint; opens: number }>; savings?: SavingsTopUp }>;
 export { repayWindow, autopayReserve, defaultCap as autopayDefaultCap } from "./autopay.js";
 
 /** A payer's Priors record as the record gate reads it. */

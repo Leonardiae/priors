@@ -45,7 +45,8 @@ const delegate = ethers.Wallet.createRandom();
 const stranger = ethers.Wallet.createRandom();
 const poolI = new ethers.Interface(POOL_V2_ABI);
 const v5I = new ethers.Interface(SEAT_VAULT_V5_ABI);
-const regI = new ethers.Interface(["function ownerOf(uint256) view returns (address)"]);
+// getAgentWallet: PriorsV2.borrow reads the agent's declared ERC-8004 wallet too (GHSA-9pw7); here the owner's key acts
+const regI = new ethers.Interface(["function ownerOf(uint256) view returns (address)", "function getAgentWallet(uint256) view returns (address)"]);
 const erc20I = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)"]);
 const PARAMS = [1_000000n, 50_000000n, 86_400n, 30n * 86_400n, 3n * 86_400n, 7n * 86_400n, 100n, 0n, 0n, 0n, 9_000n, 0n];
 const FEE = 11_666n;
@@ -108,7 +109,14 @@ function chain(w) {
           return ok([], REFRESH_GAS);
       }
     }
-    if (same(to, REG)) { const f = regI.parseTransaction({ data }); name("registry", f.name); return { result: regI.encodeFunctionResult(f.name, [w.owner]), gas: 50_000n }; }
+    if (same(to, REG)) {
+      const f = regI.parseTransaction({ data });
+      name("registry", f.name);
+      // the agent's key is also its declared ERC-8004 wallet, as Go mode's Start sets it (GHSA-9pw7: a borrow needs
+      // the owner or the declared wallet, the same rule as a repayment)
+      const who = f.name === "getAgentWallet" ? (w.declared ?? w.poolDelegate) : w.owner;
+      return { result: regI.encodeFunctionResult(f.name, [who]), gas: 50_000n };
+    }
     if (same(to, USDG)) { const f = erc20I.parseTransaction({ data }); name("usdg", f.name); return { result: erc20I.encodeFunctionResult(f.name, [f.name === "balanceOf" ? w.balance : 0n]), gas: 50_000n }; }
     return { unknown: `no contract here answers ${to} ${String(data).slice(0, 10)} (from ${from})` };
   }
@@ -262,9 +270,11 @@ await check("a key V5 recorded under 24 h ago: within the room, the borrow only;
   });
 });
 
-await check("a key that does not control the agent: NOT_CONTROLLER, nothing recorded or sent", () =>
+// GHSA-9pw7: a key that is neither the agent's owner nor its declared ERC-8004 wallet is refused before the V5 step
+// (so before `isController`'s NOT_CONTROLLER, which it would also fail): nothing is recorded or sent either way.
+await check("a key that does not control the agent: refused before anything is recorded or sent", () =>
   onChain({}, async (c) => {
-    await rejectsWith(borrow5(c, stranger), "NOT_CONTROLLER", /neither its owner nor its pool delegate/);
+    await rejectsWith(borrow5(c, stranger), undefined, /neither agent #77's owner .* nor its declared ERC-8004 wallet/);
     assert.deepEqual(c.sent, []);
   }));
 

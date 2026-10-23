@@ -744,6 +744,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // who held the agent when the loan was opened (the pool's Loan.owner), and who holds it now
     loanOwner: async (loanId) => (await contracts.pool.getLoan(loanId)).owner,
     agentOwner: (id) => contracts.registry.ownerOf(id),
+    // the agent's declared ERC-8004 wallet: set only with that wallet's own signature naming the owner, cleared by a transfer
+    agentWallet: (id) => contracts.registry.getAgentWallet(id),
     isController: (id, addr) => contracts.pool.isController(id, addr),
     agentsOf: (addr) => discoverAgents(addr),
     loanDue: async (loanId) => { const l = await contracts.pool.getLoan(loanId); return Number(l.status) === 1 ? l.principal + l.fee : null; },
@@ -759,7 +761,8 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     topUp: async (need, o) => S.topUpFromSavings(await savingsC(), wallet, need, o),
     // fund_base's loan: pay_url's borrow-the-gap (a draw of max(shortfall, the pool's minimum loan), simulated first),
     // and the pool's minimum loan, read so a refusal can name the max_borrow_usd that would do
-    borrowGap: (o) => C.borrowGap({ signer: wallet, pool: addresses.pool, ...v5, ...o }),
+    // the parties come from this server's own registry contract (GHSA-9pw7: borrowing takes the repayment rule)
+    borrowGap: (o) => C.borrowGap({ signer: wallet, pool: addresses.pool, ...v5, ownerOf: (id) => contracts.registry.ownerOf(id), agentWalletOf: (id) => contracts.registry.getAgentWallet(id), ...o }),
     minLoan: async () => (await contracts.pool.getParams()).minLoan,
   };
   let savingsCache = null;
@@ -850,7 +853,11 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       return BigInt(env.PRIORS_AGENT_ID);
     }
     if (!wallet) throw new ToolError("No agent id given, and no wallet is configured (PRIORS_KEY) to look one up. Pass agent_id.");
-    if (agentCache !== null) return agentCache;
+    // the identity found is kept only while this wallet still owns it: one sold since is looked up again (GHSA-9pw7)
+    if (agentCache !== null) {
+      if (String(await credit.agentOwner(agentCache)).toLowerCase() === wallet.address.toLowerCase()) return agentCache;
+      agentCache = null;
+    }
     const mine = await credit.agentsOf(wallet.address);
     if (mine.length === 1) return (agentCache = mine[0]);
     if (mine.length > 1) throw new ToolError(`This wallet owns several agent identities (${mine.map((i) => "#" + i).join(", ")}). Set PRIORS_AGENT_ID or pass agent_id.`);
@@ -863,8 +870,22 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (!wallet) throw new ToolError(`${action} moves money and needs a wallet: set PRIORS_KEY_FILE (the path of a file holding the key, readable by your user only) or PRIORS_KEY in the MCP server's environment (never pass a key as a tool argument or on the command line). Read-only tools (wallet_balance and savings with an address, credit_status, stock_assets, stock_position, score_of, find_services) work without it.`);
     return wallet;
   }
-  async function needController(id) {
+  /**
+   * Before this wallet's money moves for agent `id`: it must control the agent at the pool AND be the agent's current
+   * owner or its declared ERC-8004 wallet. `setDelegate` lets an owner name any address its delegate with no word from
+   * that address (GHSA-9pw7), so being a controller is no proof this wallet acts for that owner: a buyer of an agent
+   * this wallet once held could otherwise borrow and have `repay` pay it from this wallet's USDG and savings. The
+   * declared wallet is set only by that wallet's own AgentWalletSet signature naming the owner and cleared by a
+   * transfer (AutoRepay v2's rule). Borrowing takes the same rule as repaying, so no key can borrow here and then be
+   * refused the repayment that would keep it out of a default. `did` is what did not happen.
+   */
+  async function needController(id, did = "done") {
     if (!(await credit.isController(id, wallet.address))) throw new ToolError(`This wallet (${wallet.address}) does not control agent #${id} on the pool (it is neither the owner nor its delegate).`);
+    const me = wallet.address.toLowerCase();
+    const holder = String(await credit.agentOwner(id));
+    if (holder.toLowerCase() === me) return;
+    if (String(await credit.agentWallet(id)).toLowerCase() === me) return;
+    throw new ToolError(`This wallet (${wallet.address}) is neither agent #${id}'s owner (${holder}) nor its declared ERC-8004 wallet, so nothing shows it acts for that owner: the pool lets an owner name any address its delegate. Nothing was ${did}. If this is the agent's own key, declare it as the agent's wallet (\`priors-mcp link-wallet\`, then its owner sends the registry's setAgentWallet), or act from the owner's key.`);
   }
 
   // Every answer as the model gets it (fence.mjs guarded): the third-party strings it quotes outside the server's own
@@ -1043,7 +1064,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
       reserveDay(maxPrice, maxBorrow); // the day's limits, across restarts and sessions: refused here, nothing is signed
       count("spent", maxPrice); count("borrowed", maxBorrow); // the most it may sign and borrow, until it ends (GHSA-cq9v)
       let agentId;
-      if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId); }
+      if (maxBorrow > 0n) { agentId = await resolveAgent(); await needController(agentId, "paid or borrowed"); }
       // The agent's own savings before a loan: once the 402 names the price, only what the wallet is short of.
       const topUp = o.useSavings && autoSavings && typeof credit.topUp === "function" ? (need) => topUpWithin(need, deadline) : undefined;
       const payer = X.createPayer({ signer, maxPrice, maxBorrow, fetchImpl: payFetch, pendingRetries: 2, maxSleepMs: 10_000, timeoutMs: requestTimeoutMs, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(sleep ? { sleep } : {}), ...(maxBorrow > 0n ? { pool: addresses.pool, agentId, ...v5 } : {}), ...(topUp ? { topUp } : {}), ...(reserveOn && autopay ? { reserve: autopayReserve } : {}),
@@ -1353,7 +1374,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     if (!dry_run) { reserveDay(0n, amount); count("borrowed", amount); } // until this call ends (GHSA-cq9v)
     const term = BigInt(Math.round(days * 86400));
     const id = await resolveAgent();
-    await needController(id);
+    await needController(id, "borrowed");
     const q = await credit.quote(id, amount, term);
     if (dry_run) return `Quote for agent #${id}: borrow ${usd(amount)} for ${days} days, fee ${usd(q.fee)}, ${usd(q.due)} due at the end. Nothing was borrowed.${await savedNote(wallet.address)}`;
     let r;
@@ -1400,7 +1421,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
 
   tool("repay", {
     title: "Repay Priors loans",
-    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent, or one opened while someone else held the agent, is refused. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user and get their go-ahead first. The answer ends with share facts for each loan repaid (the amount, on time or late, the agent's record page), also as structured content with a suggested line; this server never posts anything.",
+    description: "Repay the agent's own Priors loans in full (principal + fee) from the configured wallet's USDG; a loan of another agent, or one opened while someone else held the agent, is refused, and so is every loan when the wallet is neither the agent's owner nor its declared ERC-8004 wallet. Give either loan_id for one loan, or all: true to repay every open loan, earliest due first, as far as the balance covers. Moves real money: state the amounts (credit_status lists them) to the user and get their go-ahead first. The answer ends with share facts for each loan repaid (the amount, on time or late, the agent's record page), also as structured content with a suggested line; this server never posts anything.",
     inputSchema: {
       loan_id: z.number().int().nonnegative().optional().describe("The loan to repay."),
       all: z.boolean().optional().describe("true: repay every open loan of the agent, earliest due first."),
@@ -1414,7 +1435,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     // Only the loans of an agent this wallet controls: the pool lets anyone repay any loan, and this wallet's USDG is
     // not for others. PRIORS_AGENT_ID alone is not proof: a stale or mistyped id would point at someone else's agent.
     const id = await resolveAgent();
-    await needController(id);
+    await needController(id, "paid");
     // Only loans the agent's current owner took: one opened while someone else held the agent is theirs (the pool marks
     // them if it defaults), and an identity that changed hands can arrive carrying it (GHSA-mmp8).
     const holder = String(await credit.agentOwner(id)).toLowerCase();
@@ -1522,7 +1543,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
         if (maxBorrow === 0n) throw new ToolError(`${holds} Nothing was done. A loan from the Priors line for it would be ${loanText}: to take it, ${atLeast}; or add USDG.`);
         if (loanNeed > maxBorrow) throw new ToolError(`${holds} A loan for it would be ${loanText}, above max_borrow_usd ${X.formatUsdg(maxBorrow)}. Nothing was borrowed or moved: ${atLeast}; or move less.`);
         const agentId = await resolveAgent();
-        await needController(agentId);
+        await needController(agentId, "borrowed or moved");
         // The route first (a read-only quote): a transfer Across would refuse (its fee, its minimum, a token or spoke that
         // is not the pinned one) never leaves behind a loan taken for it.
         try { await bridge.quote({ amount, maxFeeBps: maxBridgeFeeBps }); } catch (e) { throw new ToolError(`${explain(e)}. Nothing was borrowed or moved.`); }
@@ -1617,7 +1638,7 @@ export async function createPriorsMcpServer({ env = process.env, fetchImpl = glo
     needWallet("autopay_on");
     const ap = needAutopay();
     const id = await resolveAgent();
-    await needController(id);
+    await needController(id, "sent"); // autopay_on approves an allowance: the same rule
     let cap = cap_usd !== undefined ? dollars(cap_usd, "cap_usd") : null;
     if (cap === null) { const st = await credit.status(id); cap = A.defaultCap(st.line, maxAutopayCap); }
     if (cap === 0n) throw new ToolError("cap_usd must be above zero");

@@ -1,5 +1,24 @@
 # @priors/mcp changelog
 
+## 0.10.2 (2026-10-23)
+
+- **Every money tool needs the agent's owner or its declared ERC-8004 wallet.** CreditPoolV2 lets an owner name any
+  address its pool delegate without that address's consent. A buyer of an agent this wallet once held (or was the
+  key of) could name the wallet delegate, borrow, and have `repay` (by `loan_id` or `all: true`) pay the buyer's loans
+  from the wallet's USDG, after taking the difference out of its savings, whether the agent came from
+  `PRIORS_AGENT_ID` or from the lookup. A wallet that is not the owner must now be the agent's declared wallet (set
+  only by its own `AgentWalletSet` signature naming the owner, cleared by a transfer: AutoRepay v2's rule).
+  `repay`, `borrow`, `pay_url`, `pay_gateway`, `fund_base` and `autopay_on` all check it, before anything is read,
+  signed or sent, and `repay` leaves savings untouched. **Borrowing and repaying are deliberately symmetric:** a key
+  that may not repay here may not borrow here either, so no agent can draw a loan this server would then refuse to
+  settle before its due date.
+- **Breaking for a delegate-only key.** A key named with `setDelegate` but never declared as the agent's wallet now
+  does nothing with money here. Its owner declares it once: run `priors-mcp link-wallet --agent <id>`, which prints
+  the key's `AgentWalletSet` signature, and the owner sends the registry's `setAgentWallet` (Go mode's Start key is
+  already both). Until then, act from the owner's key. Every refusal says this.
+- **The agent the lookup found is kept only while the wallet owns it.** Without `PRIORS_AGENT_ID`, the identity found
+  was kept for the whole process; one sold since is now looked up again (and so no longer taken as the wallet's).
+
 ## 0.10.1 (2026-10-22)
 
 - **`pay_url` no longer times out for a wallet with no `PRIORS_AGENT_ID`.** Since 0.10.0 bundles AutoRepay's address,

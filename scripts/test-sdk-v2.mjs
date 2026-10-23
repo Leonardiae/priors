@@ -175,7 +175,15 @@ function stub(balance) {
       const out = reqs.map((r) => {
         methods.push(r.method);
         if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x1237" };
-        if (r.method === "eth_call") return { jsonrpc: "2.0", id: r.id, result: ethers.toBeHex(balance, 32) };
+        // the identity registry (GHSA-9pw7): float's borrow step reads the agent's owner and declared wallet; this
+        // wallet is both here (an agent run by its own owner's key), so the rule lets the borrow through
+        if (r.method === "eth_call") {
+          const d = String(r.params[0].data || r.params[0].input || "");
+          if (d.startsWith(ethers.id("ownerOf(uint256)").slice(0, 10)) || d.startsWith(ethers.id("getAgentWallet(uint256)").slice(0, 10))) {
+            return { jsonrpc: "2.0", id: r.id, result: ethers.zeroPadValue(wallet.address, 32) };
+          }
+          return { jsonrpc: "2.0", id: r.id, result: ethers.toBeHex(balance, 32) };
+        }
         return { jsonrpc: "2.0", id: r.id, error: { code: -32601, message: `unexpected ${r.method}` } };
       });
       res.setHeader("content-type", "application/json");
@@ -225,7 +233,7 @@ await check("a borrow whose answer is lost throws BORROW_UNCONFIRMED carrying th
     let signed = 0;
     const fetchImpl = async (_u, init = {}) => { if (new Headers(init.headers || {}).get("X-PAYMENT")) { signed++; return new Response("data", { status: 200 }); } return json402({ accepts: [requirement()] }); };
     // a pool whose borrow is sent (it may have mined) and then `wait` decides what came back
-    const pool = (wait) => ({ getParams: async () => ({ minLoan: 1_000000n, maxLoan: 50_000000n, minTerm: 86400n, maxTerm: 30n * 86400n }), quoteFee: async () => [10_000n], interface: new ethers.Interface([]), borrow: async () => ({ hash: "0x" + "77".repeat(32), wait }) });
+    const pool = (wait) => ({ registry: async () => readDeploymentV2(4663).registry, getParams: async () => ({ minLoan: 1_000000n, maxLoan: 50_000000n, minTerm: 86400n, maxTerm: 30n * 86400n }), quoteFee: async () => [10_000n], interface: new ethers.Interface([]), borrow: async () => ({ hash: "0x" + "77".repeat(32), wait }) });
     const o = (p) => ({ signer, fetchImpl, asset: USDG_MAINNET, pool: p, agentId: 1, maxBorrow: 5_000000n });
     const lost = await pay("https://m.example/x", o(pool(async () => { throw Object.assign(new Error("eth_getTransactionReceipt: socket hang up"), { code: "NETWORK_ERROR" }); }))).then(() => null, (e) => e);
     assert.ok(lost instanceof FloatError && lost.code === "BORROW_UNCONFIRMED", `got ${lost?.code}: ${lost?.message}`);
@@ -444,6 +452,69 @@ await check("GHSA-5c2h: PriorsV2.repay refuses a loan opened while someone else 
     const s = new PriorsV2({ signer: me.connect(new ethers.JsonRpcProvider(c.url, 4663, { staticNetwork: true })), addresses: readDeploymentV2(4663) });
     await assert.rejects(s.repay(14_285, { agentId: 9 }), new RegExp(`opened by ${STRANGER}`, "i"));
     assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+  } finally { c.server.close(); }
+});
+
+await check("GHSA-9pw7: PriorsV2.repay pays nothing for an agent whose owner named this key its pool delegate without its consent (neither the owner nor its declared ERC-8004 wallet), before any approval", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const BUYER = "0x" + "b0".repeat(20);
+  // agent #9 was this key's; its buyer opened loan #14285 and named this key its delegate (setDelegate needs no word from it)
+  const loan = [9n, 1n, 10_000000n, 23_333n, 0n, 0n, 0n, BUYER, 1n, 2n, 3n, 0n, 0n, 1];
+  let declared = ethers.ZeroAddress;
+  const c = await chain({ call: ({ to, data }) => {
+    if (to.toLowerCase() === REG && data.startsWith(sel("ownerOf(uint256)"))) return ethers.zeroPadValue(BUYER, 32);
+    if (to.toLowerCase() === REG && data.startsWith(sel("getAgentWallet(uint256)"))) return ethers.zeroPadValue(declared, 32);
+    if (to.toLowerCase() !== P) return undefined;
+    if (data.startsWith(sel("getLoan(uint256)"))) return pool.encodeFunctionResult("getLoan", [loan]);
+    if (data.startsWith(sel("isController(uint256,address)"))) return ethers.toBeHex(1, 32);
+    if (data.startsWith(sel("registry()"))) return ethers.zeroPadValue(REG, 32);
+    return undefined;
+  } });
+  try {
+    const s = new PriorsV2({ signer: me.connect(new ethers.JsonRpcProvider(c.url, 4663, { staticNetwork: true })), addresses: readDeploymentV2(4663) });
+    for (const d of [ethers.ZeroAddress, "0x" + "cc".repeat(20)]) {
+      declared = d;
+      await assert.rejects(s.repay(14_285, { agentId: 9 }), /neither agent #9's owner .* nor its declared ERC-8004 wallet/i, `declared ${d}`);
+    }
+    assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+    // the agent's declared wallet (its key, signed for this owner) goes on to pay: it is not refused by this rule
+    declared = me.address;
+    await assert.rejects(s.repay(14_285, { agentId: 9 }), (e) => !/neither agent #9's owner/i.test(e.message), "the declared wallet was refused");
+  } finally { c.server.close(); }
+});
+
+await check("GHSA-9pw7: PriorsV2.borrow refuses the same key repay refuses (a pool delegate that is neither the owner nor the declared ERC-8004 wallet), before any read or send; the owner and the declared wallet borrow", async () => {
+  const me = ethers.Wallet.createRandom();
+  const pool = new ethers.Interface(POOL_V2_ABI);
+  const P = readDeploymentV2(4663).pool.toLowerCase();
+  const BUYER = "0x" + "b0".repeat(20);
+  let owner = BUYER, declared = ethers.ZeroAddress;
+  const c = await chain({ call: ({ to, data }) => {
+    if (to.toLowerCase() === REG && data.startsWith(sel("ownerOf(uint256)"))) return ethers.zeroPadValue(owner, 32);
+    if (to.toLowerCase() === REG && data.startsWith(sel("getAgentWallet(uint256)"))) return ethers.zeroPadValue(declared, 32);
+    if (to.toLowerCase() !== P) return undefined;
+    if (data.startsWith(sel("registry()"))) return ethers.zeroPadValue(REG, 32);
+    if (data.startsWith(sel("isController(uint256,address)"))) return ethers.toBeHex(1, 32);
+    if (data.startsWith(sel("quoteFee(uint256,uint256,uint64)"))) return pool.encodeFunctionResult("quoteFee", [10_000n, 0n, 0n, 0n]);
+    if (data.startsWith(sel("getAgent(uint256)"))) return undefined; // no V5 line in this addresses file
+    return undefined;
+  } });
+  try {
+    const s = new PriorsV2({ signer: me.connect(new ethers.JsonRpcProvider(c.url, 4663, { staticNetwork: true })), addresses: readDeploymentV2(4663) });
+    for (const d of [ethers.ZeroAddress, "0x" + "cc".repeat(20)]) {
+      declared = d;
+      await assert.rejects(s.borrow(9, 5, 7 * 86400), /neither agent #9's owner .* nor its declared ERC-8004 wallet/i, `declared ${d}`);
+      await assert.rejects(s.borrow(9, 5, 7 * 86400), /nothing was borrowed/i);
+    }
+    assert.ok(!c.seen.some((r) => /send|estimate/i.test(r.method)), `something was sent: ${c.seen.map((r) => r.method)}`);
+    // the owner, and the agent's declared wallet, get past this rule (they fail later, on the stub's missing borrow)
+    for (const who of ["owner", "declared"]) {
+      owner = who === "owner" ? me.address : BUYER;
+      declared = who === "declared" ? me.address : ethers.ZeroAddress;
+      await assert.rejects(s.borrow(9, 5, 7 * 86400), (e) => !/neither agent #9's owner/i.test(e.message), `${who} was refused by the GHSA-9pw7 rule`);
+    }
   } finally { c.server.close(); }
 });
 

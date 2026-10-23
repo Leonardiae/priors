@@ -129,6 +129,7 @@ await test("borrow too: a borrow outlasting its budget answers in time; one made
   const now = Math.floor(Date.now() / 1000);
   const credit = {
     isController: async () => true,
+    agentOwner: async () => new ethers.Wallet(KEY).address, // the acting wallet owns the agent (GHSA-9pw7)
     quote: async (id, amount, term) => ({ amount, term, fee: 50_000n, due: amount + 50_000n }),
     borrow: async (id, amount, term) => { rec.push(amount); if (rec.length === 1) await landed; return { hash: "0x" + "11".repeat(32), loanId: 41n + BigInt(rec.length), principal: amount, fee: 50_000n, dueAt: now + Number(term) }; },
   };
@@ -159,6 +160,7 @@ function stalling(kind, { refuse = false, at = kind } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const credit = {
     isController: async () => true,
+    agentOwner: async () => new ethers.Wallet(KEY).address, // the acting wallet owns the agent (GHSA-9pw7)
     quote: async (id, amount, term) => { if (at === "quote" && ++quotes === 1) await landed; return { amount, term, fee: 50_000n, due: amount + 50_000n }; },
     savingsOf: async () => ({ saved: 0n, wallet: 0n }),
     [kind]: async (...a) => {
@@ -238,8 +240,13 @@ class StallingPool extends ethers.JsonRpcProvider {
     if (method !== "eth_call") throw new Error("mock: " + method);
     const data = params[0].data || params[0].input;
     if (data.startsWith("0x70a08231")) return H(st.balance, 32); // USDG balanceOf
+    // the identity registry (GHSA-9pw7): the agent's owner and declared wallet; the acting wallet is both here
+    if (data.startsWith(ethers.id("ownerOf(uint256)").slice(0, 10)) || data.startsWith(ethers.id("getAgentWallet(uint256)").slice(0, 10))) {
+      return ethers.zeroPadValue(st.agentOwner ?? new ethers.Wallet(KEY).address, 32);
+    }
     const f = POOL_I.parseTransaction({ data });
     if (f.name === "usdg") return POOL_I.encodeFunctionResult("usdg", [robinhood.usdg]);
+    if (f.name === "registry") return POOL_I.encodeFunctionResult("registry", [robinhood.registry]);
     if (f.name === "getParams") return POOL_I.encodeFunctionResult("getParams", [[100_000n, 50_000_000n, 86400n, 30n * 86400n, 3n * 86400n, 7n * 86400n, 100n, 0n, 0n, 0n, 9000n, 0n]]);
     if (f.name === "quoteFee") return POOL_I.encodeFunctionResult("quoteFee", [1_000n, 0n, 0n, 0n]);
     if (f.name === "borrow") return POOL_I.encodeFunctionResult("borrow", [BigInt(st.loans.length + 1)]);
@@ -273,7 +280,7 @@ function merchant(prices) {
   return m;
 }
 const payUrlServer = (st, m, env) => connect({ PRIORS_AGENT_ID: "7", PRIORS_SAVINGS_VAULT: "off", PRIORS_AUTOPAY_RESERVE: "off", ...env },
-  { provider: new StallingPool(st), credit: { isController: async () => true }, autopay: null, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500, m.fetchImpl);
+  { provider: new StallingPool(st), credit: { isController: async () => true, agentOwner: async () => new ethers.Wallet(KEY).address }, autopay: null, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 1_000, holdMaxMs: HOLD }, 1_500, m.fetchImpl);
 
 await test("GHSA-cq9v: pay_url too: one whose borrow still waits for its receipt once its hold has ended keeps max_borrow_usd counted, so the same purchase again does not borrow past PRIORS_MAX_BORROW_TOTAL_USD", async () => {
   const st = { balance: 400_000n }, m = merchant({ "/a": 1_000_000n });
@@ -313,7 +320,7 @@ const reserveServer = (st, m, credit) => connect({ PRIORS_SAVINGS_VAULT: "off" }
 
 await test("0.10.1: pay_url with Autopay known and no PRIORS_AGENT_ID: an agent lookup that never answers keeps nothing back after its bound, and the payment is made within the call's budget", async () => {
   const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n });
-  const call = await reserveServer(st, m, { isController: async () => true, agentsOf: () => new Promise(() => {}) });
+  const call = await reserveServer(st, m, { isController: async () => true, agentOwner: async () => new ethers.Wallet(KEY).address, agentsOf: () => new Promise(() => {}) });
   const t0 = Date.now();
   const r = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });
   assert.ok(!r.timedOut && !r.error && /Paid 0\.10 USDG/.test(r.text), r.text.slice(0, 200));
@@ -324,7 +331,7 @@ await test("0.10.1: pay_url with Autopay known and no PRIORS_AGENT_ID: an agent 
 await test("0.10.1: a wallet the lookup finds owning no agent is looked up once, not before every payment, and each payment keeps nothing back", async () => {
   const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n, "/b": 100_000n });
   let lookups = 0;
-  const call = await reserveServer(st, m, { isController: async () => true, agentsOf: async () => { lookups++; return []; } });
+  const call = await reserveServer(st, m, { isController: async () => true, agentOwner: async () => new ethers.Wallet(KEY).address, agentsOf: async () => { lookups++; return []; } });
   const a = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });
   const b = await call("pay_url", { url: "https://merchant.example/b", max_price_usd: 0.1 });
   assert.ok(!a.error && /Paid 0\.10 USDG/.test(a.text), a.text.slice(0, 200));
@@ -335,7 +342,8 @@ await test("0.10.1: a wallet the lookup finds owning no agent is looked up once,
 await test("0.10.1: once another tool finds the wallet's agent (it registered one), the reserve reads Autopay again at once, whatever an earlier no-agent answer said", async () => {
   const st = { balance: 5_000_000n }, m = merchant({ "/a": 100_000n, "/b": 100_000n });
   let owned = [], statusReads = 0;
-  const credit = { isController: async () => true, agentsOf: async () => owned, status: async () => ({ enrolled: false, line: 0n, openLoans: [] }) };
+  // the agent found is kept while the wallet owns it (GHSA-9pw7: resolveAgent asks again before using it)
+  const credit = { isController: async () => true, agentsOf: async () => owned, agentOwner: async () => new ethers.Wallet(KEY).address, status: async () => ({ enrolled: false, line: 0n, openLoans: [] }) };
   const call = await connect({ PRIORS_SAVINGS_VAULT: "off" },
     { provider: new StallingPool(st), credit, autopay: { status: async () => { statusReads++; throw new Error("a plan's read, failing: keeps nothing back"); } }, lookup: async () => [{ address: "93.184.216.34", family: 4 }], callBudgetMs: 4_000, holdMaxMs: HOLD }, 5_500, m.fetchImpl);
   const a = await call("pay_url", { url: "https://merchant.example/a", max_price_usd: 0.1 });

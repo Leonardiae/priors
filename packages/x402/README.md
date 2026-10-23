@@ -271,7 +271,8 @@ Refusals throw a `PayError` with a `code`: `PRICE_ABOVE_MAX_PRICE`, `PRICE_ABOVE
 `UNSUPPORTED_TRANSFER_METHOD` (a requirement that is not EIP-3009), `BAD_NETWORK` (a `networks` entry not in the
 allowlist), `BASE_FLOAT_SHORT` (a Base requirement, and the wallet's USDC on Base, less what `baseReserve()` keeps
 back, is short of the price: nothing was signed; `price`, `balance`, `reserve`, `network` and `asset` on the error),
-`NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3). The
+`NOT_CONTROLLER` (`repayLoan`, `settleLoans`), `NOT_OWNERS_LOAN` (`repayLoan`, 0.6.3), `NOT_AGENTS_WALLET` (`repayLoan`,
+`settleLoans`, `borrowGap`, `borrowLine`, unreleased). The
 bridge and `payViaGateway` (below) add their own codes. The credit helpers add
 `LOAN_SIZE_OUT_OF_RANGE` (`quoteBorrow`, `borrowLine`), `LOAN_NOT_ACTIVE`, `INSUFFICIENT_USDG`, `REPAY_WOULD_REVERT`
 (`repayLoan`) and `NO_STOCK_VAULT` (`stockPosition`, `stockAssets`).
@@ -300,6 +301,13 @@ only a loan of an agent the signer controls (owner or pool delegate); any other 
 before anything is sent. From 0.6.3 it also pays only a loan the agent's owner now took: a loan opened while someone
 else held the agent (`Loan.owner` is another address) is refused with `NOT_OWNERS_LOAN`, and `settleLoans` leaves such
 loans in `open` and lists them in `others` with who opened them (GHSA-mmp8).
+
+Unreleased, and **breaking for a delegate-only key**: borrowing and repaying both need the signer to be the agent's
+current owner or its declared ERC-8004 wallet (`getAgentWallet`). The pool lets an owner name any address its delegate
+with no word from that address, so a delegate that is not the declared wallet is refused with `NOT_AGENTS_WALLET`
+before anything is read or sent — in `repayLoan` and `settleLoans`, and equally in `borrowGap` and `borrowLine`, so
+that no key can draw a loan this package would then refuse to repay. The owner declares the agent's key once: the key
+signs `AgentWalletSet` (`priors-mcp link-wallet`) and the owner sends the registry's `setAgentWallet`.
 
 Stock lines (the Priors stock vault, `robinhood.stockVault`, backs a line with the agent's own stock tokens;
 `creditContracts` reads it unless `addresses.stockVault` says otherwise): `creditStatus` carries `collateral` {

@@ -263,6 +263,7 @@ const ERC20_ABI = [
 ];
 const REGISTRY_ABI = [
   "function ownerOf(uint256) view returns (address)",
+  "function getAgentWallet(uint256 agentId) view returns (address)",
   "function balanceOf(address) view returns (uint256)",
   "function register(string) returns (uint256)",
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
@@ -1168,6 +1169,22 @@ export class PriorsV2 {
   }
 
   /**
+   * GHSA-9pw7: whether this key may move its own money for `agentId` — borrow into it, or repay its loans. The pool's
+   * `setDelegate` lets an owner name any address its delegate with no word from that address, so controlling the agent
+   * is no proof this key acts for that owner. It must be the agent's current owner or its declared ERC-8004 wallet
+   * (set only by that wallet's own AgentWalletSet signature naming this owner, cleared by a transfer). Borrowing takes
+   * the same rule as repaying, so no key borrows here and is then refused a repayment. Returns the owner.
+   */
+  async _needOwnerOrAgentWallet(agentId, did) {
+    const reg = await this._registry();
+    const me = (await this.me()).toLowerCase();
+    const holder = String(await reg.ownerOf(agentId));
+    if (holder.toLowerCase() === me) return holder;
+    if (String(await reg.getAgentWallet(agentId)).toLowerCase() === me) return holder;
+    throw new Error(`${await this.me()} is neither agent #${agentId}'s owner (${holder}) nor its declared ERC-8004 wallet: a pool delegate the owner named is not proof it acts for that owner, so nothing was ${did}. Declare this key as the agent's wallet (the registry's setAgentWallet, signed by this key), or use the owner's key.`);
+  }
+
+  /**
    * Borrow `amount` for `termSeconds`. USDG lands in `to` (default: the signer). `maxFee` defaults to the pool's
    * own quote, so a premium raised between quote and mining reverts (FeeTooHigh) instead of costing more.
    * On a SeatVaultV5 line (`seatVaultV5` and `seatVaultV5AgentId` in the addresses), V5's step first (float.mjs
@@ -1182,6 +1199,8 @@ export class PriorsV2 {
   async borrow(agentId, amount, termSeconds, { to, maxFee } = {}) {
     const units = toUnits(amount);
     const term = BigInt(termSeconds);
+    // the repayment rule, before any read or send (GHSA-9pw7): no borrow this SDK would then refuse to repay
+    await this._needOwnerOrAgentWallet(agentId, "borrowed");
     const fee = maxFee ?? (await this.pool.quoteFee(agentId, units, term)).fee;
     if (this.vaultV5) this._needSigner();
     const v5 = await v5BeforeBorrow({ signer: this.signer, pool: this.pool, v5: this.vaultV5, v5Root: this.addresses.seatVaultV5AgentId ?? null, agentId, amount: units });
@@ -1220,6 +1239,8 @@ export class PriorsV2 {
     // GHSA-5c2h), and controlling the agent now does not make it this key's to pay
     const holder = await (await this._registry()).ownerOf(l.agentId);
     if (String(l.owner).toLowerCase() !== String(holder).toLowerCase()) throw new Error(`loan #${loanId} was opened by ${l.owner}, which held agent #${l.agentId} then; its owner now (${holder}) did not take it: not repaid`);
+    // ...and controlling the agent is not proof this key pays for its owner (GHSA-9pw7): the same rule as borrow's
+    await this._needOwnerOrAgentWallet(l.agentId, "repaid");
     const due = l.principal + l.fee;
     await this._ensure(await this._usdg(), await this.pool.getAddress(), due, `repay(${loanId})`);
     const rc = await sendChecked(this.pool, "repay", [loanId, BigInt(agentId), due], this._ifaces);

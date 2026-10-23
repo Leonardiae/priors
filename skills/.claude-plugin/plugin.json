@@ -1,7 +1,7 @@
 {
   "name": "priors",
   "displayName": "Priors",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Give an ERC-8004 agent a credit history on Priors (Robinhood Chain), and check any agent's record and score: the Priors skill, plus the hosted read-only Priors MCP server (no key, no transaction)",
   "author": {
     "name": "priors-agents",
