@@ -55,9 +55,10 @@ Income can add points, but it can't lift a thin record to "earned". Every thresh
 
 Every result explains itself: the score, the rung, each component with its points and reason, penalties, and the
 raw details (USDG-days, loans, payers, and `incomeUsdg`: the x402 USDG of the payers that count, before caps and
-weights). `receiptsUsdg` and `receiptPayers` show everything the agent was paid by payers outside its cluster in the
-window, at face value, dust and new wallets included: a customer's payment is always shown, even when it doesn't count
-toward the score.
+weights). `receiptsUsdg` and `receiptPayers` show what the agent was paid by payers outside its cluster in the window,
+net of what its side sent back but before caps and weights, dust and fresh wallets included: a customer's payment is
+shown even when it doesn't count toward the score, once that payer's netting is read (a new payer, or a payment to a new
+agent's cluster, waits until then: "New payers and new agents wait" below).
 
 Each result also has `next` (since 2026-10-16): the next rung and how far the agent is on each of its conditions,
 `{ rung, name, needs: [{ key, have, need, met }], blocked }`, from the same figures the rung is judged on:
@@ -103,8 +104,11 @@ once, without holding scores back; the published `index.permit2Backfill` is `nul
 - **Netted.** USDG that any wallet of the agent's cluster sent to a payer (before or after, whole chain) is taken off
   that payer's payments: money that goes back where it came from is not income.
 - **No dust.** A payer counts once it has paid 1 USDG in the window. Below that it adds nothing and costs no scan.
-- **New payers wait, nobody else does.** A new payer's netting is read from the start of the chain on its own; until
-  then its payments wait. Everyone else's scores keep publishing.
+- **New payers and new agents wait, nobody else does.** A new payer's netting is read from the start of the chain on
+  its own; until then its payments wait (they show nowhere, receipts included). A new agent's owner and declared
+  wallet are read the same way, and until then payments to every agent of its cluster wait. These reads go oldest
+  first, before a new wallet's past payments, 100,000 blocks a request, and each step goes on from where the last one
+  stopped. Everyone else's scores keep publishing.
 - **Repaid from income.** A loan that counts (backed by someone else, repaid on time by the agent's own wallets, since
   its last change of hands) and was repaid while counted income arrived is marked repaid from income, in proportion.
   Income is weighted like the income component, capped at 20 USDG per payer per loan, and each payment is spent once.

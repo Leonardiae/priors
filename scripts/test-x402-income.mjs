@@ -444,6 +444,67 @@ await check("index: a payment a backfill finds puts its agent's repaid loan's re
   assert.equal(read.complete, true);
 });
 
+await check("index (live 2026-10-23): a payment backfill that outlasts every run never starves the netting backfills: a new payer and a new agent's wallet stop waiting, and the payments count", async () => {
+  // agent 1 (W1) has been paid by P1; then agent 2 arrives with a new wallet (W2, whose past payments are backfilled
+  // from the start) and a new payer P2 pays agent 1. Live, the new wallets' payment backfills took every run's budget,
+  // the netting backfills behind them never ran, and every payer of 1 USDG or more stayed pending: 0 receipts on the board
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 50 }, { payer: P2, payTo: W1, amount: 2_000_000, block: 110 }], wallets: { 1: W1, 2: W2 } });
+  let r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));
+  const inner = chain.getLogs.bind(chain), real = Date.now;
+  let clock = real();
+  // from now on, a payment window of the range read before (the backfill's) takes a minute: longer than a whole run
+  chain.getLogs = async (f) => { if (f.topics[0] === TOPICS.AUTH_USED && f.toBlock <= 100) clock += 60_000; return inner(f); };
+  Date.now = () => clock;
+  const snap = snapOf([agent(1, W1), agent(2, W2)]);
+  const waiting = [];
+  try {
+    for (let run = 1; run <= 4; run++) {
+      r = await updateIncome(chain, r.state, opts(snap, 100 + 10 * run, { deadline: clock + 45_000 }));
+      waiting.push(r.pending.payers.length + r.pending.wallets.length);
+      assert.ok(r.state.paymentBackfills.some((bf) => bf.wallets.includes(lc(W2))), `run ${run}: the payment backfill outlasts the run`);
+    }
+  } finally { Date.now = real; }
+  assert.deepEqual(r.pending, { payers: [], wallets: [] }, `the new payer and the new wallet stop waiting (pending per run: ${waiting})`);
+  assert.equal(waiting[0], 0, "in the first run");
+  const s = scoreAll(world([agent(1, W1), agent(2, W2)]), { links: { clusters: [] }, income: r.state.payments, agentWallets: r.state.agentWallets, transfers: r.state.transfers, pending: r.pending }).find((x) => x.agentId === 1);
+  assert.deepEqual([s.detail.receiptPayers, s.detail.receiptsUsdg, s.detail.distinctPayers], [2, 3, 2], "P2's payment shows and counts");
+});
+
+await check("index (live 2026-10-23): a netting backfill longer than a run's time moves run by run, its cursor kept, instead of reading the same window again every run", async () => {
+  // the official node answers a query with lists of topics over 100,000 blocks at most: it refuses a wider one, and
+  // getLogsAdaptive halves it, so a 5M window goes out as 64 requests and 63 refusals (18 s on 2026-10-23, up to 36 s
+  // before: 0.14-0.28 s a call). Here each call takes 0.3 s and the run's cursors 10 s first: the 5M window needs
+  // 38 s of the 35 s left. A window cut short by the run's deadline is dropped whole: one that never fits never moves
+  const M = 1_000_000, HEAD = 30 * M;
+  const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: HEAD - 50 }, { payer: P2, payTo: W1, amount: 2_000_000, block: HEAD + 50 }],
+    transfers: [{ from: W1, to: P2, amount: 500_000, block: 3 * M }, { from: W1, to: P2, amount: 250_000, block: 27 * M }], wallets: { 1: W1 } });
+  let r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), HEAD)); // built while netting was cheap
+  const inner = chain.getLogs.bind(chain), real = Date.now;
+  let clock = real();
+  const netting = (f) => f.topics[0] === TOPICS.TRANSFER && Array.isArray(f.topics[1]) && f.topics[1].map((t) => t.toLowerCase()).includes(ethers.zeroPadValue(W1, 32).toLowerCase());
+  chain.getLogs = async (f) => {
+    if (f.topics[0] === TOPICS.AUTH_USED && f.fromBlock > HEAD) clock += 10_000; // the run's cursors, before the backfills
+    if (!netting(f)) return inner(f);
+    clock += 300;
+    if (f.toBlock - f.fromBlock + 1 > 100_000) throw Object.assign(new Error("could not coalesce error"), { error: { code: -32602, message: "query spans too many blocks; narrow the block range" } });
+    return inner(f);
+  };
+  Date.now = () => clock;
+  const next = [];
+  try {
+    for (let run = 1; run <= 4 && (run === 1 || r.state.transferBackfills.length); run++) {
+      r = await updateIncome(chain, r.state, opts(snapOf([agent(1, W1)]), HEAD + 100 * run, { deadline: clock + 45_000 }));
+      const bf = r.state.transferBackfills.find((x) => x.to.includes(lc(P2)));
+      next.push(bf ? bf.next : "done");
+    }
+  } finally { Date.now = real; }
+  assert.ok(typeof next[0] === "number" && next[0] > 1, `the first run keeps what it read (next per run: ${next})`);
+  assert.ok(next.every((n, i) => i === 0 || n === "done" || n > next[i - 1]), `and each run goes on from there (next per run: ${next})`);
+  assert.equal(next[next.length - 1], "done", `P2's netting is read within 4 runs (next per run: ${next})`);
+  assert.deepEqual(r.pending.payers, []);
+  assert.deepEqual(r.state.transfers.map((x) => [x.to, x.amount, x.block]), [[lc(P2), "500000", 3 * M], [lc(P2), "250000", 27 * M]], "every window of the chain read once");
+});
+
 await check("index: a new index reads Permit2 payments from the start, through the same cursor as the signed ones", async () => {
   const chain = fakeChain({ payments: [{ payer: P1, payTo: W1, amount: 1_000_000, block: 40 }], permit2: [{ payer: P2, payTo: W1, amount: 2_000_000, block: 50 }], wallets: { 1: W1 } });
   const r = await updateIncome(chain, null, opts(snapOf([agent(1, W1)]), 100));

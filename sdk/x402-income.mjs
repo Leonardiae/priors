@@ -373,6 +373,11 @@ export const INDEX_DEFAULTS = Object.freeze({
   maxRepayerReads: 50,        // receipts read per run
   paymentsChunk: 2_000_000,   // blocks per payment window at first and at most
   minPaymentsChunk: 10_000,   // a window never gets smaller than this
+  // blocks per netting window (cursor and backfills). A window cut short by the run's end is dropped whole. The official
+  // node answers a query with lists of topics over 100,000 blocks at most ("only 100000 are allowed for this request"),
+  // so a 5M window went out as 80 requests and 79 refusals, 17-36 s, read again from its start whenever the run ended
+  // inside it. 100,000 blocks is one request (0.12-0.15 s there, 2026-10-23), so a run keeps all but its last one.
+  transfersChunk: 100_000,
   transfersFrom: 1,           // netting reads the whole chain
   minPayerAtomic: 1_000_000,  // a payer is netted (and counts) once it has paid 1 USDG: dust can't make work
 });
@@ -484,7 +489,7 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   };
   const { from, payers } = track();
   if (payers.length && state.transfersTo < head && !past(deadline)) {
-    const r = await scanTransfers(provider, { usdg, from, to: payers, fromBlock: state.transfersTo + 1, toBlock: head, deadline });
+    const r = await scanTransfers(provider, { usdg, from, to: payers, fromBlock: state.transfersTo + 1, toBlock: head, chunk: P.transfersChunk, deadline });
     addUnique(state.transfers, r.transfers);
     state.transfersTo = Math.max(state.transfersTo, r.scannedTo);
   }
@@ -514,9 +519,22 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   /* The backfills, last, with what is left of the run: what the cursors above read is what a score needs now, and a
      backfill can take every run for days (on 2026-10-10 nine new wallets' payment backfills, 10-13 million blocks each,
      took the whole budget of every run, and once a first payer appeared the netting cursor behind them never moved, so
-     no score was published). What a payment backfill finds is looked at again below, as if a cursor had found it: its
-     payer is tracked (its netting read on its own before its income counts, `pending`), and its agent's repaid loans'
-     repayers are read, or the scores wait for them. */
+     no score was published). The netting backfills come first: until one is read, its payers' income (or its new
+     wallets' cluster's) waits, while a payment backfill still to read only leaves an income smaller for now (until
+     2026-10-23 they came after the payment backfills, which took every run, so every payer of 1 USDG or more stayed
+     pending and the board showed no receipts). What a payment backfill finds is looked at again below, as if a cursor
+     had found it: its payer is tracked (its netting read on its own before its income counts, `pending`, in the same
+     run when there is time), and its agent's repaid loans' repayers are read, or the scores wait for them. */
+  const netBackfills = async () => {
+    for (const bf of state.transferBackfills) {
+      if (past(deadline)) break;
+      const r = await scanTransfers(provider, { usdg, from: bf.from, to: bf.to, fromBlock: bf.next, toBlock: bf.until, chunk: P.transfersChunk, deadline });
+      addUnique(state.transfers, r.transfers);
+      bf.next = r.scannedTo + 1;
+    }
+    state.transferBackfills = state.transferBackfills.filter((bf) => bf.next <= bf.until);
+  };
+  await netBackfills();
   for (const bf of state.paymentBackfills) {
     if (past(deadline) || scanStatus.stopped === "rate-limited") break;
     const from = bf.next;
@@ -538,13 +556,7 @@ export async function updateIncome(provider, prev, { usdg, registry, pool, autoR
   keep();
   track();
   pendingRepayers = await repayers();
-  for (const bf of state.transferBackfills) {
-    if (past(deadline)) break;
-    const r = await scanTransfers(provider, { usdg, from: bf.from, to: bf.to, fromBlock: bf.next, toBlock: bf.until, deadline });
-    addUnique(state.transfers, r.transfers);
-    bf.next = r.scannedTo + 1;
-  }
-  state.transferBackfills = state.transferBackfills.filter((bf) => bf.next <= bf.until);
+  await netBackfills();
 
   // 5. size: under the store's value limit, pruning old payments first (never below `minKeepDays`)
   let size = JSON.stringify(state).length;
