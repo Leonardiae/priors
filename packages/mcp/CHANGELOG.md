@@ -1,5 +1,34 @@
 # @priors/mcp changelog
 
+## 0.11.0 (2026-10-24)
+
+- **`find_services` lists only the merchants Go mode's Tools lists.** The ones Priors approved, and the ones under review
+  whose own endpoint passed the facilitator's 402 check (USDG to their own address), marked under review; a hidden
+  merchant, or one under review whose check has not passed, is no longer listed or counted, its words included.
+- **`join`, off by default (`PRIORS_JOIN=on`): an agent identity without a clone of the repository.** For the
+  configured wallet, when it owns no ERC-8004 identity on Robinhood Chain, `join` sends one transaction to the identity
+  registry's `register(string)` (as the SDK's `PriorsV2.register`) with the URI `priors:agent:mcp:<its address>`, which
+  the Priors Directory counts under origin Priors, apart from the command line's `priors:agent:<address>`
+  (`docs/growth/mcp-join.md` in the repository). Its gas is paid in the wallet's own ETH. It answers the new id and its
+  routes to a first line, as the hosted server's `line_options` reads them (the treasury's first line by invite, the
+  Ethos lane, a stock line, and the line the owner's own $PRIORS would open, as a quote): `src/line-options.mjs` is the
+  hosted server's own computation, and the bundled deployment record gains `treasuryV5`, `treasuryV5AgentId` and
+  `ethosRoot` for it.
+  - A wallet that already owns an identity gets its id back and nothing is sent; so does a server with
+    `PRIORS_AGENT_ID` set.
+  - A wallet with no ETH, or less than the registration's gas can cost (the estimate and a quarter, at the fee's
+    ceiling), is refused before anything is signed.
+  - The registration is signed first, so its hash is known, and kept in `PRIORS_STATE_DIR` (`join-<wallet>.json`,
+    owner-only; with the id it registered once mined) before its one broadcast. After a failed broadcast the node is asked about that hash, as `pt_buy` does
+    since 0.9.3. A registration whose receipt is lost answers `TX_UNCONFIRMED` with its hash, and every later `join`,
+    after a restart or from another session of the same wallet too, sends nothing until the node shows it mined, then
+    answers its id. Only once the wallet's nonce is used by another transaction is a registration the node never showed
+    dropped: that call registers nothing either, or answers the identity a faster copy of it registered (the nonce and
+    the registry read at one block).
+  - With it off (unset, or `off`, `false`, `0`, `no`, `none`), the tools, the instructions and every answer are as in
+    0.10.2, but for `find_services` (above); any other value stops the start. With it on, the no-agent error names `join` in place of the clone, and the
+    instructions gain one sentence on it.
+
 ## 0.10.2 (2026-10-23)
 
 - **Every money tool needs the agent's owner or its declared ERC-8004 wallet.** CreditPoolV2 lets an owner name any
